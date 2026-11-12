@@ -35,7 +35,9 @@ export const Config = z.object({
   language: z.string().default('auto'),
   stripTags: z.boolean().default(true),
   requestTimeoutMs: z.number().min(1000).default(300000),
-  ffmpegPath: z.string().default('ffmpeg')
+  ffmpegPath: z.string().default('ffmpeg'),
+  asrOptions: z.dict(z.union([z.string(), z.number(), z.boolean()])).default({}),
+  ttsOptions: z.dict(z.union([z.string(), z.number(), z.boolean()])).default({})
 })
 
 /** Language hints advertised to the GUI picker (SenseVoice set). */
@@ -140,6 +142,9 @@ function createClient(config) {
     form.append('file', new Blob([wavBytes], { type: 'audio/wav' }), filename)
     const hint = language ?? config.language
     if (hint && hint !== 'auto') form.append('language', hint)
+    if (config.asrOptions && Object.keys(config.asrOptions).length > 0) {
+      form.append('options', JSON.stringify(config.asrOptions))
+    }
     const res = await request('/v1/audio/transcriptions', { method: 'POST', body: form }, signal)
     const json = await res.json()
     const raw = String(json.text ?? '')
@@ -169,6 +174,9 @@ function createClient(config) {
     }
     if (selectedVoice) body.voice = selectedVoice
     if (instruct) body.instruct = instruct
+    if (config.ttsOptions && Object.keys(config.ttsOptions).length > 0) {
+      body.options = { ...config.ttsOptions }
+    }
     if (voiceRef) {
       body.voice_ref = voiceRef
       if (referenceText) body.reference_text = referenceText
@@ -232,6 +240,218 @@ async function resolveHostPath(ctx, exec, path) {
   return ctx.fs.processPath(target)
 }
 
+/** Send one JSON response on a raw carrier socket. */
+function sendJson(res, status, value) {
+  const body = JSON.stringify(value)
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'no-store'
+  })
+  res.end(body)
+}
+
+/** Read a bounded JSON request body. */
+function readJsonBody(req, limit = 65536) {
+  return new Promise((resolve, reject) => {
+    let size = 0
+    const chunks = []
+    req.on('data', chunk => {
+      size += chunk.length
+      if (size > limit) {
+        reject(new Error('request body too large'))
+        req.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
+    req.on('end', () => {
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')) }
+      catch { reject(new Error('invalid JSON body')) }
+    })
+    req.on('error', reject)
+  })
+}
+
+/**
+ * Same-origin fence for the configuration routes, mirroring the host's own
+ * trust model: the Host authority must be loopback, the carrier's bind
+ * address, a declared trusted host, or the carrier origin; a browser-stated
+ * Origin must additionally match that authority.
+ */
+function createOriginFence(ctx) {
+  const authorityName = host => {
+    const lower = String(host).toLowerCase()
+    return lower.startsWith('[') ? lower.slice(1, lower.indexOf(']')) : lower.split(':')[0]
+  }
+  const trusted = host => {
+    const name = authorityName(host)
+    if (name === 'localhost' || name === '::1' || name.startsWith('127.')) return true
+    const bind = ctx.get('webServer')?.host
+    if (typeof bind === 'string' && bind !== '' && name === authorityName(bind)) return true
+    const declared = ctx.get('connection')?.trustedHosts
+    if (Array.isArray(declared)) {
+      for (const entry of declared) {
+        if (typeof entry === 'string' && authorityName(entry) === name) return true
+      }
+    }
+    try {
+      if (new URL(ctx.get('webServer').getOrigin()).host === String(host).toLowerCase()) return true
+    } catch { /* carrier origin unavailable */ }
+    return false
+  }
+  return req => {
+    const host = req.headers.host
+    if (host !== undefined && !trusted(host)) return false
+    const origin = req.headers.origin
+    if (origin !== undefined) {
+      try {
+        if (new URL(origin).host !== host) return false
+      } catch { return false }
+    }
+    return true
+  }
+}
+
+/** Keep only known configuration fields with sane types; reject bad URLs. */
+function sanitizeConfig(input) {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('config must be an object')
+  }
+  const out = {}
+  if (input.serverUrl !== undefined) {
+    if (typeof input.serverUrl !== 'string') throw new Error('serverUrl must be a string')
+    let url
+    try { url = new URL(input.serverUrl) } catch { throw new Error('serverUrl is not a valid URL') }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('serverUrl must be http(s)')
+    out.serverUrl = input.serverUrl
+  }
+  for (const key of ['asrModel', 'ttsModel', 'defaultVoice', 'language', 'ffmpegPath']) {
+    if (input[key] !== undefined) {
+      if (typeof input[key] !== 'string') throw new Error(`${key} must be a string`)
+      out[key] = input[key]
+    }
+  }
+  if (input.stripTags !== undefined) {
+    if (typeof input.stripTags !== 'boolean') throw new Error('stripTags must be a boolean')
+    out.stripTags = input.stripTags
+  }
+  if (input.requestTimeoutMs !== undefined) {
+    if (typeof input.requestTimeoutMs !== 'number' || !Number.isFinite(input.requestTimeoutMs) || input.requestTimeoutMs < 1000) {
+      throw new Error('requestTimeoutMs must be a number >= 1000')
+    }
+    out.requestTimeoutMs = Math.round(input.requestTimeoutMs)
+  }
+  for (const key of ['asrOptions', 'ttsOptions']) {
+    if (input[key] !== undefined) {
+      if (input[key] === null || typeof input[key] !== 'object' || Array.isArray(input[key])) {
+        throw new Error(`${key} must be an object`)
+      }
+      const options = {}
+      for (const [name, value] of Object.entries(input[key])) {
+        if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
+          throw new Error(`${key}.${name} must be a string, number, or boolean`)
+        }
+        options[name] = value
+      }
+      out[key] = options
+    }
+  }
+  return out
+}
+
+/** The configuration fields the settings page reads and writes. */
+function configView(config) {
+  return {
+    serverUrl: config.serverUrl,
+    asrModel: config.asrModel,
+    ttsModel: config.ttsModel,
+    defaultVoice: config.defaultVoice,
+    language: config.language,
+    stripTags: config.stripTags,
+    requestTimeoutMs: config.requestTimeoutMs,
+    ffmpegPath: config.ffmpegPath,
+    asrOptions: config.asrOptions ?? {},
+    ttsOptions: config.ttsOptions ?? {}
+  }
+}
+
+/**
+ * Register the same-origin configuration routes when the carrier and the
+ * config editor are present (web profiles). The settings page reads the
+ * effective config plus live server discovery, and writes through the
+ * official config editor so the profile patch stays the source of truth.
+ */
+function registerConfigRoutes(ctx, config) {
+  ctx.inject(['webServer', 'configEditor'], child => {
+    const fence = createOriginFence(child)
+    const base = config.serverUrl.replace(/\/+$/, '')
+
+    /** Best-effort short-timeout probe of the audio.cpp server for the UI. */
+    async function probe(path) {
+      try {
+        const res = await fetch(base + path, { signal: AbortSignal.timeout(8000) })
+        if (!res.ok) return null
+        return await res.json()
+      } catch { return null }
+    }
+
+    child.effect(() => {
+      const disposeRead = child.webServer.register({
+        kind: 'exact',
+        path: '/audio-cpp-plugin/config',
+        handler: async (req, res) => {
+          if (!fence(req)) return sendJson(res, 403, { error: 'untrusted origin' })
+          if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, 405, { error: 'method not allowed' })
+          const models = await probe('/v1/models?include_params=true')
+          const list = Array.isArray(models?.data) ? models.data : []
+          const ttsId = config.ttsModel || list.find(m => m.task === 'tts')?.id
+          const voices = ttsId ? await probe(`/v1/audio/voices?model=${encodeURIComponent(ttsId)}`) : null
+          const health = await probe('/health')
+          sendJson(res, 200, {
+            config: configView(config),
+            server: {
+              health: health ?? null,
+              models: list,
+              voices: Array.isArray(voices?.voices) ? voices.voices : []
+            }
+          })
+        }
+      })
+      const disposeWrite = child.webServer.register({
+        kind: 'exact',
+        path: '/audio-cpp-plugin/config/save',
+        handler: async (req, res) => {
+          if (!fence(req)) return sendJson(res, 403, { error: 'untrusted origin' })
+          if (req.method !== 'POST') return sendJson(res, 405, { error: 'method not allowed' })
+          const entry = child.fiber.entry
+          const editor = child.get('configEditor')
+          if (entry === undefined || editor === undefined) {
+            return sendJson(res, 503, { error: 'Configuration cannot be saved in this profile' })
+          }
+          let sanitized
+          try {
+            const body = await readJsonBody(req)
+            sanitized = sanitizeConfig(body.config)
+          } catch (error) {
+            return sendJson(res, 400, { error: error.message })
+          }
+          try {
+            await editor.edit(entry, current => ({ ...current, ...sanitized }))
+          } catch (error) {
+            return sendJson(res, 409, { error: `Configuration write rejected: ${error.message}` })
+          }
+          sendJson(res, 200, { ok: true })
+        }
+      })
+      return () => {
+        disposeRead()
+        disposeWrite()
+      }
+    })
+  })
+}
+
 /**
  * Register the speech provider and the two agent tools.
  * @param ctx - Host context with tools, speechToText, fs, workingDirectory.
@@ -244,6 +464,9 @@ export function apply(ctx, config) {
   }
   const client = createClient(config)
   const log = ctx.logger('audio-cpp-plugin')
+
+  // GUI settings page backend; inactive in profiles without a web carrier.
+  registerConfigRoutes(ctx, config)
 
   ctx.effect(() => {
     // Native GUI voice input: the browser records 16 kHz mono WAV and the

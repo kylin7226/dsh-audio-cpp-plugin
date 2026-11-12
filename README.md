@@ -12,6 +12,8 @@ audio.cpp is a pure-C++ ggml inference engine for audio models (ASR, TTS, VAD, v
 - **`speech_transcribe` agent tool** — transcribe a local audio file to text. WAV is sent directly; mp3/flac/m4a/ogg and other formats are converted with ffmpeg. Returns text plus audio/inference durations.
 - **`speech_synthesize` agent tool** — synthesize text to a local WAV file, with optional voice selection and speaking-style instruction. When no voice is given, the server default applies; for zero-shot models that require reference audio (e.g. CosyVoice3), the first voice-library entry is used. The agent can deliver the file to you with `present`.
 - **Model auto-discovery** — model ids come from configuration, or are discovered from the server's `/v1/models` roster by task (`asr` / `tts`).
+- **Model options** — pass any request option your server model declares (`asrOptions` / `ttsOptions`), e.g. ITN, chunk size, sampling controls.
+- **Settings page** — the plugin's card under **Plugins** has a configuration form: server URL with a live connection status, ASR/TTS model pickers, voice picker, language, and the model options the server declares. Values are written through the official config editor, so the profile patch stays the source of truth.
 - **Clean transcripts** — SenseVoice-style inline tags (`<|zh|><|HAPPY|>...`) are stripped by default (configurable).
 
 The plugin is a stateless HTTP client: the audio.cpp server, its models, and its voice library are owned and managed by you.
@@ -79,7 +81,9 @@ The bundle inserts four rows: the plugin itself, the DSH speech-to-text service 
 
 ## Configure
 
-Point the plugin at your server in the profile's `cordis.patch.yml` (the user patch layer):
+Open **Plugins → dsh-audio-cpp-plugin** for the settings form. It shows the live server status, lets you pick models and a voice from what the server advertises, and renders the model options the server declares. Saving writes through the DSH config editor into the profile patch.
+
+The same fields are editable by hand in the profile's `cordis.patch.yml` (the user patch layer):
 
 ```yaml
 - id: audio-cpp-plugin
@@ -89,6 +93,10 @@ Point the plugin at your server in the profile's `cordis.patch.yml` (the user pa
     asrModel: my-asr        # optional; discovered from /v1/models when empty
     ttsModel: my-tts        # optional; discovered from /v1/models when empty
     defaultVoice: demo_3_woman  # optional; server default when empty
+    ttsOptions:             # optional; request options declared by the model
+      text_chunk_size: 400
+    asrOptions:             # optional
+      enable_itn: true
 ```
 
 | Field | Default | Meaning |
@@ -98,9 +106,13 @@ Point the plugin at your server in the profile's `cordis.patch.yml` (the user pa
 | `ttsModel` | `''` (auto) | Server model id for synthesis; empty picks the first `tts` model |
 | `defaultVoice` | `''` (server default) | Voice sent when a request omits one |
 | `language` | `auto` | Default ASR language hint; `auto` omits the hint |
+| `asrOptions` | `{}` | Request options for `/v1/audio/transcriptions`, sent as the `options` form field |
+| `ttsOptions` | `{}` | Request options for `/v1/audio/speech`, sent as `options` |
 | `stripTags` | `true` | Strip `<\|...\|>` model tags from transcripts |
 | `requestTimeoutMs` | `300000` | Per-request timeout |
 | `ffmpegPath` | `ffmpeg` | ffmpeg executable for non-WAV conversion |
+
+Model option names and value ranges come from `GET /v1/models?include_params=true` on your server — the settings page renders exactly what the selected model declares.
 
 ## Usage
 

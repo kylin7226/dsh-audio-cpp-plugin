@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "audio.cpp speech",
-    "description": "Native speech recognition and synthesis backed by an audio.cpp server: GUI microphone voice input plus the speech_transcribe and speech_synthesize agent tools."
+    "description": "Native speech recognition and synthesis backed by an audio.cpp server: GUI microphone voice input, the speech_transcribe and speech_synthesize agent tools, and a settings page for the server, models, voice, and model options."
   }
 }

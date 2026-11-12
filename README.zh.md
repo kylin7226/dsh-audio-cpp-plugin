@@ -11,7 +11,9 @@ audio.cpp 是纯 C++ 的 ggml 音频模型推理引擎（ASR、TTS、VAD、声�
 - **GUI 语音输入** — 向 Harness 语音输入子系统注册 `speechToText` provider（`audio-cpp`），输入框的麦克风按钮直接走你的 audio.cpp ASR 模型转写。音频全程留在你自己的基础设施上。
 - **`speech_transcribe` 工具** — 把本地音频文件转成文字。WAV 直传；mp3/flac/m4a/ogg 等格式经 ffmpeg 转换。返回文本及音频/推理时长。
 - **`speech_synthesize` 工具** — 把文字合成为本地 WAV 文件，可选音色与语气指令。未指定音色时用服务端默认；对需要参考音频的零样本模型（如 CosyVoice3），自动取音色库第一个音色。Agent 可用 `present` 把音频交付给你。
-- **模型自动发现** — 模型 id 可配置，也可留空由插件从服务端 `/v1/models` 按任务（`asr` / `tts`）自动选取。
+- **模型自动发现** — 模型 id 可配置，也可留空时由插件从服务端 `/v1/models` 按任务（`asr` / `tts`）自动选取。
+- **模型选项** — 可传入服务端模型声明的任意请求参数（`asrOptions` / `ttsOptions`），如 ITN、分块长度、采样控制等。
+- **设置页面** — 插件在 **插件页** 的卡片上有配置表单：服务器地址与实时连接状态、ASR/TTS 模型选择、音色选择、识别语言，以及服务端声明的模型选项。保存经官方配置编辑器写入，profile 补丁层仍是唯一事实来源。
 - **干净转写** — 默认清理 SenseVoice 风格的内联标签（`<|zh|><|HAPPY|>...`），可配置关闭。
 
 插件是无状态 HTTP 客户端：audio.cpp 服务、模型与音色库均由你自行拥有和管理。
@@ -79,7 +81,9 @@ Bundle 会插入四行：插件本体、DSH 语音转写服务（默认 provider
 
 ## 配置
 
-在 profile 的 `cordis.patch.yml`（用户补丁层）中指向你的服务：
+打开 **插件 → dsh-audio-cpp-plugin** 即为设置表单：显示服务端实时状态、从服务端提供的模型/音色中选择、并渲染模型声明的可调选项。保存后经 DSH 配置编辑器写入 profile 补丁层。
+
+同样的字段也可在 profile 的 `cordis.patch.yml`（用户补丁层）中手工编辑：
 
 ```yaml
 - id: audio-cpp-plugin
@@ -89,6 +93,10 @@ Bundle 会插入四行：插件本体、DSH 语音转写服务（默认 provider
     asrModel: my-asr        # 可选；留空则从 /v1/models 自动发现
     ttsModel: my-tts        # 可选；留空则从 /v1/models 自动发现
     defaultVoice: demo_3_woman  # 可选；留空则用服务端默认
+    ttsOptions:             # 可选；模型声明的请求参数
+      text_chunk_size: 400
+    asrOptions:             # 可选
+      enable_itn: true
 ```
 
 | 字段 | 默认值 | 含义 |
@@ -98,9 +106,13 @@ Bundle 会插入四行：插件本体、DSH 语音转写服务（默认 provider
 | `ttsModel` | `''`（自动） | 合成用的服务端模型 id；留空取第一个 `tts` 模型 |
 | `defaultVoice` | `''`（服务端默认） | 请求未指定音色时发送的音色 |
 | `language` | `auto` | 默认 ASR 语言提示；`auto` 表示不发送提示 |
+| `asrOptions` | `{}` | `/v1/audio/transcriptions` 的请求参数，以 `options` 表单字段发送 |
+| `ttsOptions` | `{}` | `/v1/audio/speech` 的请求参数，以 `options` 发送 |
 | `stripTags` | `true` | 清理转写文本中的 `<\|...\|>` 模型标签 |
 | `requestTimeoutMs` | `300000` | 单请求超时 |
 | `ffmpegPath` | `ffmpeg` | 非 WAV 转换用的 ffmpeg 可执行文件 |
+
+模型选项的名称与取值范围取自服务端的 `GET /v1/models?include_params=true`——设置页渲染的正是所选模型声明的参数。
 
 ## 使用
 
