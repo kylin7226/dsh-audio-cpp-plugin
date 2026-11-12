@@ -13,7 +13,7 @@ audio.cpp is a pure-C++ ggml inference engine for audio models (ASR, TTS, VAD, v
 - **`speech_synthesize` agent tool** — synthesize text to a local WAV file, with optional voice selection and speaking-style instruction. When no voice is given, the server default applies; for zero-shot models that require reference audio (e.g. CosyVoice3), the first voice-library entry is used. The agent can deliver the file to you with `present`.
 - **Model auto-discovery** — model ids come from configuration, or are discovered from the server's `/v1/models` roster by task (`asr` / `tts`).
 - **Model options** — pass any request option your server model declares (`asrOptions` / `ttsOptions`), e.g. ITN, chunk size, sampling controls.
-- **Settings page** — the plugin's card under **Plugins** has a configuration form: server URL with a live connection status, ASR/TTS model pickers, voice picker, language, and the model options the server declares. Values are written through the official config editor, so the profile patch stays the source of truth.
+- **Settings page** — the plugin's card under **Plugins** has a configuration form: server URL with a live connection status, ASR/TTS model pickers, voice picker, and language. It stays model-agnostic: anything specific to one model family goes under **Advanced settings** as plain `key = value` lines (`asrOptions` / `ttsOptions`), forwarded to the server unchanged. Values are written through the official config editor, so the profile patch stays the source of truth.
 - **Clean transcripts** — SenseVoice-style inline tags (`<|zh|><|HAPPY|>...`) are stripped by default (configurable).
 
 The plugin is a stateless HTTP client: the audio.cpp server, its models, and its voice library are owned and managed by you.
@@ -81,7 +81,7 @@ The bundle inserts four rows: the plugin itself, the DSH speech-to-text service 
 
 ## Configure
 
-Open **Plugins → dsh-audio-cpp-plugin** for the settings form. It shows the live server status, lets you pick models and a voice from what the server advertises, and renders the model options the server declares. Saving writes through the DSH config editor into the profile patch.
+Open **Plugins → dsh-audio-cpp-plugin** for the settings form. The main form holds only fields that mean the same thing for every audio.cpp model family. Model-specific request options live under **Advanced settings**: one `key = value` per line, forwarded to the server as given (only bare `true` / `false` become booleans; quote a value that needs surrounding spaces). This keeps the page working across model families — the plugin never has to know what `template_name` or `text_chunk_size` means.
 
 The same fields are editable by hand in the profile's `cordis.patch.yml` (the user patch layer):
 
@@ -112,7 +112,7 @@ The same fields are editable by hand in the profile's `cordis.patch.yml` (the us
 | `requestTimeoutMs` | `300000` | Per-request timeout |
 | `ffmpegPath` | `ffmpeg` | ffmpeg executable for non-WAV conversion |
 
-Model option names and value ranges come from `GET /v1/models?include_params=true` on your server — the settings page renders exactly what the selected model declares.
+Model option names and accepted values are defined by your server's model family — see [model docs](https://github.com/0xShug0/audio.cpp/blob/main/docs/usage.md) and `GET /v1/models?include_params=true` on your server for what each one accepts.
 
 ## Usage
 

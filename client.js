@@ -2,6 +2,11 @@
  * Client half of dsh-audio-cpp-plugin: the plugin settings page shown on the
  * bundle's card in the Plugins page (`plugins.bundle.config`).
  *
+ * Model-agnostic by design: the main form holds only fields that mean the same
+ * thing for every audio.cpp model family (server, model ids, voice, language).
+ * Model-specific request options live under Advanced as raw key = value lines,
+ * so they work for any family without the UI knowing its parameters.
+ *
  * Plain-JS React component; styles use only `--dsw-alias-*` theme tokens so
  * appearance follows the host in both light and dark themes.
  */
@@ -15,82 +20,127 @@ window.__ModuleLoader__.load({
     const NS = 'audio-cpp-plugin'
 
     const zh = {
-      title: '连接设置',
       serverUrl: '服务器地址',
       serverUrlHint: 'audio.cpp 服务的 HTTP 地址',
       status: '连接状态',
       online: '已连接',
       offline: '无法连接',
       backend: '后端',
-      models: '模型',
       asrModel: '语音识别模型（ASR）',
       ttsModel: '语音合成模型（TTS）',
-      auto: '自动（使用服务端第一个同类模型）',
+      auto: '自动（第一个同类模型）',
       noModels: '服务端未返回模型，请检查地址',
       defaultVoice: '默认音色',
       serverDefaultVoice: '服务端默认',
       language: '识别语言',
-      stripTags: '清理识别结果中的模型标签',
-      stripTagsHint: '移除 <|zh|>、<|HAPPY|> 这类 SenseVoice 内联标签',
-      requestTimeoutMs: '请求超时（毫秒）',
-      ffmpegPath: 'ffmpeg 路径',
-      ffmpegPathHint: '仅转写非 WAV 文件时使用',
-      asrOptions: '识别模型选项',
-      ttsOptions: '合成模型选项',
-      optionsHint: '来自服务端声明的可用参数；留空表示使用模型默认值',
-      noOptions: '该模型未声明可调参数',
       refresh: '刷新',
       refreshing: '刷新中…',
       save: '保存',
       saving: '保存中…',
       saved: '已保存，配置正在重新加载',
       saveFailed: '保存失败',
-      advanced: '高级',
-      collapse: '收起',
-      unknown: '未知'
+      advanced: '高级设置',
+      advancedHint: '以下选项对所有 audio.cpp 模型通用，按需填写',
+      asrOptions: '识别请求参数（options）',
+      ttsOptions: '合成请求参数（options）',
+      optionsHint: '每行一个 key = value，值原样传给服务端模型（只有 true/false 会按布尔发送）；留空表示用模型默认值',
+      optionsPlaceholder: 'text_chunk_size = 400\nenable_itn = true\nseed = 1234',
+      stripTags: '清理识别结果中的模型标签',
+      stripTagsHint: '移除 <|zh|>、<|HAPPY|> 这类内联标签（不同模型标签形式不同）',
+      requestTimeoutMs: '请求超时（毫秒）',
+      ffmpegPath: 'ffmpeg 路径',
+      ffmpegPathHint: '仅转写非 WAV 文件时使用',
+      showAdvanced: '展开',
+      hideAdvanced: '收起',
+      parseError: '参数格式有误，请写成 key = value',
+      errorLines: '问题行：'
     }
 
     const en = {
-      title: 'Connection settings',
       serverUrl: 'Server URL',
       serverUrlHint: 'HTTP address of the audio.cpp server',
       status: 'Status',
       online: 'Connected',
       offline: 'Unreachable',
       backend: 'Backend',
-      models: 'Models',
       asrModel: 'Speech recognition model (ASR)',
       ttsModel: 'Speech synthesis model (TTS)',
-      auto: 'Automatic (first model of this task)',
+      auto: 'Automatic (first of this task)',
       noModels: 'The server returned no models; check the URL',
       defaultVoice: 'Default voice',
       serverDefaultVoice: 'Server default',
       language: 'Recognition language',
-      stripTags: 'Strip model tags from transcripts',
-      stripTagsHint: 'Removes SenseVoice inline tags such as <|zh|> or <|HAPPY|>',
-      requestTimeoutMs: 'Request timeout (ms)',
-      ffmpegPath: 'ffmpeg path',
-      ffmpegPathHint: 'Used only to convert non-WAV files',
-      asrOptions: 'Recognition model options',
-      ttsOptions: 'Synthesis model options',
-      optionsHint: 'Parameters declared by the server model; empty means the model default',
-      noOptions: 'This model declares no configurable parameters',
       refresh: 'Refresh',
       refreshing: 'Refreshing…',
       save: 'Save',
       saving: 'Saving…',
       saved: 'Saved; the configuration is reloading',
       saveFailed: 'Save failed',
-      advanced: 'Advanced',
-      collapse: 'Collapse',
-      unknown: 'unknown'
+      advanced: 'Advanced settings',
+      advancedHint: 'These options are model-agnostic and are passed through as given',
+      asrOptions: 'Transcription request options',
+      ttsOptions: 'Synthesis request options',
+      optionsHint: 'One key = value per line; values are forwarded as given (only true/false become booleans). Empty means the model default',
+      optionsPlaceholder: 'text_chunk_size = 400\nenable_itn = true\nseed = 1234',
+      stripTags: 'Strip model tags from transcripts',
+      stripTagsHint: 'Removes inline tags such as <|zh|> or <|HAPPY|>; tag shapes differ per model family',
+      requestTimeoutMs: 'Request timeout (ms)',
+      ffmpegPath: 'ffmpeg path',
+      ffmpegPathHint: 'Used only to convert non-WAV files',
+      showAdvanced: 'Show',
+      hideAdvanced: 'Hide',
+      parseError: 'Invalid option line, expected key = value',
+      errorLines: 'Lines: '
     }
 
     const LANGUAGES = ['auto', 'zh', 'en', 'yue', 'ja', 'ko']
 
+    /** Parse `key = value` lines into a typed options object. */
+    function parseOptions(text) {
+      const options = {}
+      const errors = []
+      const lines = String(text ?? '').split('\n')
+      lines.forEach((raw, index) => {
+        const line = raw.trim()
+        if (line === '' || line.startsWith('#') || line.startsWith('//')) return
+        const at = line.indexOf('=')
+        if (at <= 0) {
+          errors.push({ line: index + 1, text: raw })
+          return
+        }
+        const key = line.slice(0, at).trim()
+        const rawValue = line.slice(at + 1).trim()
+        if (key === '') {
+          errors.push({ line: index + 1, text: raw })
+          return
+        }
+        if (rawValue === 'true') options[key] = true
+        else if (rawValue === 'false') options[key] = false
+        else if ((rawValue.startsWith('"') && rawValue.endsWith('"')) || (rawValue.startsWith("'") && rawValue.endsWith("'"))) {
+          options[key] = rawValue.slice(1, -1).replaceAll('\\"', '"')
+        } else options[key] = rawValue
+      })
+      return { options, errors }
+    }
+
+    /** Render an options object back into editable text. */
+    function formatOptions(options) {
+      if (options === null || typeof options !== 'object') return ''
+      return Object.entries(options).map(([key, value]) => {
+        if (typeof value === 'boolean') return `${key} = ${value}`
+        const text = String(value)
+        // Quote only values a reader could not retype unambiguously.
+        if (text === '' || text.trim() !== text || text.includes('\n') ||
+            /^["']/.test(text) || /^true$|^false$/.test(text)) {
+          return `${key} = "${text.replaceAll('"', '\\"')}"`
+        }
+        return `${key} = ${text}`
+      }).join('\n')
+    }
+
     const css = `
 .aac-root { display: flex; flex-direction: column; gap: 16px; font-size: 13px; color: var(--dsw-alias-label-primary); }
-.aac-head { display: flex; align-items: center; gap: 8px; }
+.aac-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .aac-title { font-weight: 600; }
 .aac-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
 .aac-dot.on { background: var(--dsw-alias-state-success-primary); }
@@ -104,14 +154,13 @@ window.__ModuleLoader__.load({
   border: 1px solid var(--dsw-alias-border-l1); outline: none; }
 .aac-control:focus { border-color: var(--dsw-alias-brand-primary); }
 .aac-control:disabled { opacity: .6; }
+.aac-textarea { min-height: 84px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.6; }
 .aac-hint { font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.aac-error { font-size: 12px; color: var(--dsw-alias-state-error-primary); }
 .aac-row { display: flex; align-items: center; gap: 8px; }
 .aac-check { width: 14px; height: 14px; accent-color: var(--dsw-alias-brand-primary); }
 .aac-section { border-top: 1px solid var(--dsw-alias-border-l1); padding-top: 12px; display: flex; flex-direction: column; gap: 10px; }
-.aac-section-title { display: flex; align-items: center; justify-content: space-between; font-weight: 600; }
-.aac-opts { display: flex; flex-direction: column; gap: 8px; }
-.aac-opt { display: grid; grid-template-columns: minmax(120px, 200px) minmax(0, 1fr); gap: 10px; align-items: center; }
-.aac-opt-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.aac-section-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 600; }
 .aac-actions { display: flex; align-items: center; gap: 10px; }
 .aac-btn { padding: 6px 14px; border-radius: 7px; font: inherit; cursor: pointer;
   border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); }
@@ -135,110 +184,58 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** Model option controls, driven by the params the server declares. */
-    function OptionsSection({ title, options, params, onChange, t, disabled }) {
-      const rows = Array.isArray(params) ? params : []
-      return h('section', { className: 'aac-section' },
-        h('div', { className: 'aac-section-title' }, h('span', null, title)),
-        rows.length === 0
-          ? h('div', { className: 'aac-hint' }, t('noOptions'))
-          : h('div', { className: 'aac-opts' }, rows.map(param => {
-            const name = param.name
-            const value = options[name]
-            const common = {
-              className: 'aac-control',
-              disabled,
-              'aria-label': name,
-              title: param.description || name
-            }
-            let control
-            if (Array.isArray(param.values) && param.values.length > 0) {
-              control = h('select', {
-                ...common,
-                value: value === undefined ? '' : String(value),
-                onChange: event => {
-                  const next = event.target.value
-                  onChange(name, next === '' ? undefined : next)
-                }
-              },
-                h('option', { value: '' }, param.default !== undefined ? String(param.default) : ''),
-                param.values.map(option => h('option', { key: String(option), value: String(option) }, String(option)))
-              )
-            } else if (param.type === 'bool') {
-              const checked = value === undefined ? param.default === true : value === true
-              return h('div', { className: 'aac-opt', key: name },
-                h('div', { className: 'aac-opt-name', title: param.description || name }, name),
-                h('div', { className: 'aac-field' },
-                  h('label', { className: 'aac-row' },
-                    h('input', {
-                      type: 'checkbox',
-                      className: 'aac-check',
-                      checked,
-                      disabled,
-                      'aria-label': name,
-                      onChange: event => onChange(name, event.target.checked)
-                    }),
-                    h('span', { className: 'aac-hint' }, checked ? 'true' : 'false')
-                  ),
-                  param.description ? h('div', { className: 'aac-hint' }, param.description) : null
-                )
-              )
-            } else if (param.type === 'int' || param.type === 'float') {
-              control = h('input', {
-                ...common,
-                type: 'number',
-                value: value === undefined ? '' : String(value),
-                placeholder: param.default !== undefined ? String(param.default) : '',
-                onChange: event => {
-                  const raw = event.target.value
-                  if (raw === '') return onChange(name, undefined)
-                  const parsed = Number(raw)
-                  onChange(name, Number.isFinite(parsed) ? parsed : raw)
-                }
-              })
-            } else {
-              control = h('input', {
-                ...common,
-                type: 'text',
-                value: value === undefined ? '' : String(value),
-                placeholder: param.default !== undefined ? String(param.default) : '',
-                onChange: event => onChange(name, event.target.value === '' ? undefined : event.target.value)
-              })
-            }
-            return h('div', { className: 'aac-opt', key: name },
-              h('div', { className: 'aac-opt-name', title: param.description || name }, name),
-              h('div', { className: 'aac-field' },
-                control,
-                param.description ? h('div', { className: 'aac-hint' }, param.description) : null
-              )
-            )
-          }))
+    /** A free-form `key = value` editor for one options object. */
+    function OptionEditor({ label, hint, placeholder, text, errors, disabled, onChange, t }) {
+      return h('div', { className: 'aac-field' },
+        h('div', { className: 'aac-label' }, label),
+        h('textarea', {
+          className: 'aac-control aac-textarea',
+          value: text,
+          placeholder,
+          disabled,
+          spellCheck: false,
+          'aria-label': label,
+          onChange: event => onChange(event.target.value)
+        }),
+        h('div', { className: 'aac-hint' }, hint),
+        errors.length > 0
+          ? h('div', { className: 'aac-error' },
+            `${t('parseError')} — ${t('errorLines')}${errors.map(error => error.line).join(', ')}`)
+          : null
       )
     }
 
     function Settings({ t }) {
       const [config, setConfig] = useState(null)
       const [server, setServer] = useState({ health: null, models: [], voices: [] })
+      const [texts, setTexts] = useState({ asrOptions: '', ttsOptions: '' })
       const [loading, setLoading] = useState(true)
       const [busy, setBusy] = useState(false)
       const [message, setMessage] = useState(null)
       const [showAdvanced, setShowAdvanced] = useState(false)
+
+      const apply = useCallback(body => {
+        setConfig(body.config)
+        setServer(body.server ?? { health: null, models: [], voices: [] })
+        setTexts({
+          asrOptions: formatOptions(body.config?.asrOptions),
+          ttsOptions: formatOptions(body.config?.ttsOptions)
+        })
+      }, [])
 
       const reload = useCallback(async () => {
         setLoading(true)
         try {
           const res = await fetch(api('/audio-cpp-plugin/config'), { cache: 'no-store' })
           if (!res.ok) throw new Error(`HTTP ${res.status}`)
-          const body = await res.json()
-          setConfig(body.config)
-          setServer(body.server ?? { health: null, models: [], voices: [] })
+          apply(await res.json())
           setMessage(null)
         } catch (error) {
           setMessage({ kind: 'err', text: `${t('offline')}: ${error.message}` })
         } finally {
           setLoading(false)
         }
-      }, [t])
+      }, [apply, t])
 
       useEffect(() => { void reload() }, [reload])
 
@@ -247,45 +244,30 @@ window.__ModuleLoader__.load({
         setMessage(null)
       }, [])
 
-      const patchOption = useCallback((key, name, value) => {
-        setConfig(current => {
-          if (current === null) return current
-          const next = { ...(current[key] ?? {}) }
-          if (value === undefined) delete next[name]
-          else next[name] = value
-          return { ...current, [key]: next }
-        })
-        setMessage(null)
-      }, [])
+      const asrParsed = useMemo(() => parseOptions(texts.asrOptions), [texts.asrOptions])
+      const ttsParsed = useMemo(() => parseOptions(texts.ttsOptions), [texts.ttsOptions])
+      const hasErrors = asrParsed.errors.length > 0 || ttsParsed.errors.length > 0
 
       const models = Array.isArray(server.models) ? server.models : []
       const asrModels = models.filter(model => model.task === 'asr')
       const ttsModels = models.filter(model => model.task === 'tts')
-      const asrId = config?.asrModel || asrModels[0]?.id
-      const ttsId = config?.ttsModel || ttsModels[0]?.id
-      const asr = models.find(model => model.id === asrId)
-      const tts = models.find(model => model.id === ttsId)
       const voices = Array.isArray(server.voices) ? server.voices : []
       const online = server.health !== null && server.health !== undefined
 
-      // Drop option values that the newly selected model does not declare.
-      const visibleOptions = useCallback((key, params) => {
-        const declared = new Set((params ?? []).map(param => param.name))
-        const options = config?.[key] ?? {}
-        const out = {}
-        for (const [name, value] of Object.entries(options)) if (declared.has(name)) out[name] = value
-        return out
-      }, [config])
-
       const save = useCallback(async () => {
-        if (config === null) return
+        if (config === null || hasErrors) return
         setBusy(true)
         setMessage(null)
         try {
+          const payload = {
+            ...config,
+            asrOptions: asrParsed.options,
+            ttsOptions: ttsParsed.options
+          }
           const res = await fetch(api('/audio-cpp-plugin/config/save'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ config })
+            body: JSON.stringify({ config: payload })
           })
           const body = await res.json().catch(() => ({}))
           if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`)
@@ -296,7 +278,7 @@ window.__ModuleLoader__.load({
         } finally {
           setBusy(false)
         }
-      }, [config, reload, t])
+      }, [asrParsed, config, hasErrors, reload, t, ttsParsed])
 
       if (loading && config === null) {
         return h('div', { className: 'aac-root' }, h('div', { className: 'aac-hint' }, t('refreshing')))
@@ -308,11 +290,9 @@ window.__ModuleLoader__.load({
         )
       }
 
-      const asrParams = asr?.params
-      const ttsParams = tts?.params
-
       return h('div', { className: 'aac-root' },
         h('style', null, css),
+
         h('div', { className: 'aac-head' },
           h('span', { className: `aac-dot ${online ? 'on' : 'off'}` }),
           h('span', { className: 'aac-title' }, t('status')),
@@ -322,6 +302,7 @@ window.__ModuleLoader__.load({
             : null
         ),
 
+        // Model-agnostic fields only: these mean the same thing for every family.
         h('div', { className: 'aac-grid' },
           h(Row, { label: t('serverUrl'), hint: t('serverUrlHint') },
             h('div', { className: 'aac-row' },
@@ -389,72 +370,76 @@ window.__ModuleLoader__.load({
           )
         ),
 
-        h('section', { className: 'aac-section' },
-          h('div', { className: 'aac-section-title' }, h('span', null, t('asrOptions'))),
-          h('div', { className: 'aac-hint' }, t('optionsHint')),
-          h(OptionsSection, {
-            title: asrId ?? '',
-            options: visibleOptions('asrOptions', asrParams),
-            params: asrParams,
-            onChange: (name, value) => patchOption('asrOptions', name, value),
-            t,
-            disabled: busy
-          })
-        ),
-
-        h('section', { className: 'aac-section' },
-          h('div', { className: 'aac-section-title' }, h('span', null, t('ttsOptions'))),
-          h('div', { className: 'aac-hint' }, t('optionsHint')),
-          h(OptionsSection, {
-            title: ttsId ?? '',
-            options: visibleOptions('ttsOptions', ttsParams),
-            params: ttsParams,
-            onChange: (name, value) => patchOption('ttsOptions', name, value),
-            t,
-            disabled: busy
-          })
-        ),
-
+        // Everything model-specific lives here, as raw values.
         h('section', { className: 'aac-section' },
           h('div', { className: 'aac-section-title' },
             h('span', null, t('advanced')),
             h('button', {
               className: 'aac-btn',
               onClick: () => setShowAdvanced(value => !value)
-            }, showAdvanced ? t('collapse') : t('advanced'))
+            }, showAdvanced ? t('hideAdvanced') : t('showAdvanced'))
           ),
+          h('div', { className: 'aac-hint' }, t('advancedHint')),
           showAdvanced
-            ? h('div', { className: 'aac-grid' },
-              h(Row, { label: t('stripTags'), hint: t('stripTagsHint') },
-                h('input', {
-                  type: 'checkbox',
-                  className: 'aac-check',
-                  checked: config.stripTags,
-                  disabled: busy,
-                  onChange: event => patch('stripTags', event.target.checked)
-                })
-              ),
-              h(Row, { label: t('requestTimeoutMs') },
-                h('input', {
-                  className: 'aac-control',
-                  type: 'number',
-                  min: 1000,
-                  value: String(config.requestTimeoutMs),
-                  disabled: busy,
-                  onChange: event => {
-                    const parsed = Number(event.target.value)
-                    patch('requestTimeoutMs', Number.isFinite(parsed) ? parsed : config.requestTimeoutMs)
-                  }
-                })
-              ),
-              h(Row, { label: t('ffmpegPath'), hint: t('ffmpegPathHint') },
-                h('input', {
-                  className: 'aac-control',
-                  type: 'text',
-                  value: config.ffmpegPath,
-                  disabled: busy,
-                  onChange: event => patch('ffmpegPath', event.target.value)
-                })
+            ? h(React.Fragment, null,
+              h(OptionEditor, {
+                label: t('asrOptions'),
+                hint: t('optionsHint'),
+                placeholder: t('optionsPlaceholder'),
+                text: texts.asrOptions,
+                errors: asrParsed.errors,
+                disabled: busy,
+                onChange: value => {
+                  setTexts(current => ({ ...current, asrOptions: value }))
+                  setMessage(null)
+                },
+                t
+              }),
+              h(OptionEditor, {
+                label: t('ttsOptions'),
+                hint: t('optionsHint'),
+                placeholder: t('optionsPlaceholder'),
+                text: texts.ttsOptions,
+                errors: ttsParsed.errors,
+                disabled: busy,
+                onChange: value => {
+                  setTexts(current => ({ ...current, ttsOptions: value }))
+                  setMessage(null)
+                },
+                t
+              }),
+              h('div', { className: 'aac-grid' },
+                h(Row, { label: t('stripTags'), hint: t('stripTagsHint') },
+                  h('input', {
+                    type: 'checkbox',
+                    className: 'aac-check',
+                    checked: config.stripTags,
+                    disabled: busy,
+                    onChange: event => patch('stripTags', event.target.checked)
+                  })
+                ),
+                h(Row, { label: t('requestTimeoutMs') },
+                  h('input', {
+                    className: 'aac-control',
+                    type: 'number',
+                    min: 1000,
+                    value: String(config.requestTimeoutMs),
+                    disabled: busy,
+                    onChange: event => {
+                      const parsed = Number(event.target.value)
+                      patch('requestTimeoutMs', Number.isFinite(parsed) ? parsed : config.requestTimeoutMs)
+                    }
+                  })
+                ),
+                h(Row, { label: t('ffmpegPath'), hint: t('ffmpegPathHint') },
+                  h('input', {
+                    className: 'aac-control',
+                    type: 'text',
+                    value: config.ffmpegPath,
+                    disabled: busy,
+                    onChange: event => patch('ffmpegPath', event.target.value)
+                  })
+                )
               )
             )
             : null
@@ -463,7 +448,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'aac-actions' },
           h('button', {
             className: 'aac-btn primary',
-            disabled: busy,
+            disabled: busy || hasErrors,
             onClick: () => void save()
           }, busy ? t('saving') : t('save')),
           message ? h('span', { className: `aac-msg ${message.kind}` }, message.text) : null

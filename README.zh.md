@@ -13,7 +13,7 @@ audio.cpp 是纯 C++ 的 ggml 音频模型推理引擎（ASR、TTS、VAD、声�
 - **`speech_synthesize` 工具** — 把文字合成为本地 WAV 文件，可选音色与语气指令。未指定音色时用服务端默认；对需要参考音频的零样本模型（如 CosyVoice3），自动取音色库第一个音色。Agent 可用 `present` 把音频交付给你。
 - **模型自动发现** — 模型 id 可配置，也可留空时由插件从服务端 `/v1/models` 按任务（`asr` / `tts`）自动选取。
 - **模型选项** — 可传入服务端模型声明的任意请求参数（`asrOptions` / `ttsOptions`），如 ITN、分块长度、采样控制等。
-- **设置页面** — 插件在 **插件页** 的卡片上有配置表单：服务器地址与实时连接状态、ASR/TTS 模型选择、音色选择、识别语言，以及服务端声明的模型选项。保存经官方配置编辑器写入，profile 补丁层仍是唯一事实来源。
+- **设置页面** — 插件在 **插件页** 的卡片上有配置表单：服务器地址与实时连接状态、ASR/TTS 模型选择、音色、识别语言。主表单保持模型无关：某个模型家族特有的参数放在 **高级设置** 里，按 `key = value` 逐行填写（`asrOptions` / `ttsOptions`），原样传给服务端。保存经官方配置编辑器写入，profile 补丁层仍是唯一事实来源。
 - **干净转写** — 默认清理 SenseVoice 风格的内联标签（`<|zh|><|HAPPY|>...`），可配置关闭。
 
 插件是无状态 HTTP 客户端：audio.cpp 服务、模型与音色库均由你自行拥有和管理。
@@ -81,7 +81,7 @@ Bundle 会插入四行：插件本体、DSH 语音转写服务（默认 provider
 
 ## 配置
 
-打开 **插件 → dsh-audio-cpp-plugin** 即为设置表单：显示服务端实时状态、从服务端提供的模型/音色中选择、并渲染模型声明的可调选项。保存后经 DSH 配置编辑器写入 profile 补丁层。
+打开 **插件 → dsh-audio-cpp-plugin** 即为设置表单。主表单只放对所有 audio.cpp 模型家族含义一致的字段；模型特有参数放在 **高级设置** 中，每行一个 `key = value`，原样传给服务端（只有裸写的 `true` / `false` 转为布尔值；值首尾含空格时加引号）。这样换模型、换服务端都不用改插件——插件无需理解 `template_name` 或 `text_chunk_size` 的具体含义。
 
 同样的字段也可在 profile 的 `cordis.patch.yml`（用户补丁层）中手工编辑：
 
@@ -112,7 +112,7 @@ Bundle 会插入四行：插件本体、DSH 语音转写服务（默认 provider
 | `requestTimeoutMs` | `300000` | 单请求超时 |
 | `ffmpegPath` | `ffmpeg` | 非 WAV 转换用的 ffmpeg 可执行文件 |
 
-模型选项的名称与取值范围取自服务端的 `GET /v1/models?include_params=true`——设置页渲染的正是所选模型声明的参数。
+模型选项的名称与取值范围由你服务端的模型家族决定——参见 [模型文档](https://github.com/0xShug0/audio.cpp/blob/main/docs/usage.md) 以及服务端的 `GET /v1/models?include_params=true`。
 
 ## 使用
 
