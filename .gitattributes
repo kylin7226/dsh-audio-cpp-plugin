@@ -1,0 +1,7 @@
+# Normalize line endings so the YAML patch and JSON locales behave identically
+# on every platform (the DSH loader parses cordis.patch.yml verbatim).
+* text=auto eol=lf
+
+# Binary assets are not text-normalized.
+*.png binary
+*.svg text
