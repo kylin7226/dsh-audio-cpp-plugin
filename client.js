@@ -90,6 +90,10 @@ window.__ModuleLoader__.load({
       requestTimeoutMs: '请求超时（毫秒）',
       ffmpegPath: 'ffmpeg 路径',
       ffmpegPathHint: '仅转写非 WAV 文件时使用',
+      asrLanguages: '识别语言列表',
+      asrLanguagesHint: '逗号分隔，会显示在 GUI 语音输入的语言选择里；auto 表示自动检测。按你实际 ASR 模型支持的语言填写',
+      allowOutputOutsideWorkspace: '允许合成到工作区之外',
+      allowOutputOutsideWorkspaceHint: '默认只能把音频写到当前会话工作区内；勾选后 speech_synthesize 可写到任意路径',
       showAdvanced: '展开',
       hideAdvanced: '收起',
       parseError: '参数格式有误，请写成 key = value',
@@ -167,6 +171,10 @@ window.__ModuleLoader__.load({
       requestTimeoutMs: 'Request timeout (ms)',
       ffmpegPath: 'ffmpeg path',
       ffmpegPathHint: 'Used only to convert non-WAV files',
+      asrLanguages: 'Recognition languages',
+      asrLanguagesHint: 'Comma-separated; shown in the GUI voice-input language picker. auto means detect. List what your ASR model actually supports.',
+      allowOutputOutsideWorkspace: 'Allow synthesis outside workspace',
+      allowOutputOutsideWorkspaceHint: 'By default speech_synthesize can only write inside the current session workspace; enable to write anywhere',
       showAdvanced: 'Show',
       hideAdvanced: 'Hide',
       parseError: 'Invalid option line, expected key = value',
@@ -373,6 +381,10 @@ window.__ModuleLoader__.load({
       const capabilities = server.capabilities ?? null
       const state = status?.state ?? (server.health ? 'ok' : 'unreachable')
       const online = state === 'ok'
+      const languageChoices = Array.isArray(config.asrLanguages) && config.asrLanguages.length > 0
+        ? config.asrLanguages
+        : LANGUAGES
+      const languageValue = languageChoices.includes(config.language) ? config.language : 'auto'
 
       const save = useCallback(async () => {
         if (config === null || hasErrors) return
@@ -592,10 +604,10 @@ window.__ModuleLoader__.load({
           h(Row, { label: t('language') },
             h('select', {
               className: 'aac-control',
-              value: config.language,
+              value: languageValue,
               disabled: busy,
               onChange: event => patch('language', event.target.value)
-            }, LANGUAGES.map(code => h('option', { key: code, value: code }, code)))
+            }, languageChoices.map(code => h('option', { key: code, value: code }, code)))
           ),
 
           h(Row, { label: t('asrMode'), hint: t('asrModeHint') },
@@ -680,6 +692,25 @@ window.__ModuleLoader__.load({
                     value: config.ffmpegPath,
                     disabled: busy,
                     onChange: event => patch('ffmpegPath', event.target.value)
+                  })
+                ),
+                h(Row, { label: t('asrLanguages'), hint: t('asrLanguagesHint') },
+                  h('input', {
+                    className: 'aac-control',
+                    type: 'text',
+                    value: (Array.isArray(config.asrLanguages) ? config.asrLanguages : []).join(', '),
+                    placeholder: 'auto, zh, en, yue, ja, ko',
+                    disabled: busy,
+                    onChange: event => patch('asrLanguages', event.target.value.split(',').map(s => s.trim()).filter(s => s !== ''))
+                  })
+                ),
+                h(Row, { label: t('allowOutputOutsideWorkspace'), hint: t('allowOutputOutsideWorkspaceHint') },
+                  h('input', {
+                    type: 'checkbox',
+                    className: 'aac-check',
+                    checked: config.allowOutputOutsideWorkspace === true,
+                    disabled: busy,
+                    onChange: event => patch('allowOutputOutsideWorkspace', event.target.checked)
                   })
                 )
               )

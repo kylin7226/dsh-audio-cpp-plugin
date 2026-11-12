@@ -13,6 +13,7 @@ audio.cpp 是纯 C++ 的 ggml 音频模型推理引擎（ASR、TTS、VAD、声�
 - **`speech_synthesize` 工具** — 把文字合成为本地 WAV 文件，可选音色与语气指令。未指定音色时用服务端默认；对需要参考音频的零样本模型（如 CosyVoice3），自动取音色库第一个音色。Agent 可用 `present` 把音频交付给你。
 - **模型自动发现** — 模型 id 可配置，也可留空时由插件从服务端 `/v1/models` 按任务（`asr` / `tts`）自动选取。
 - **实时 / 非实时识别** — 可让服务端边解码边返回转写事件（`stream`），或整段解码后一次返回（`offline`）；`speech_transcribe` 结果会标明实际走的路径，流式时还给出首个文本耗时。
+- **工具卡片** — 两个工具都会渲染待处理卡片（转写显示文件并可跳转；合成预览文本与音色）和结果卡片（汇总时长与音色），而非原始工具输出。
 - **模型选项** — 可传入服务端模型声明的任意请求参数（`asrOptions` / `ttsOptions`），如 ITN、分块长度、采样控制等。
 - **设置页面** — 插件在 **插件页** 的卡片上有配置表单：服务器地址与实时连接状态、ASR/TTS 模型选择、音色、识别语言。主表单保持模型无关：某个模型家族特有的参数放在 **高级设置** 里，按 `key = value` 逐行填写（`asrOptions` / `ttsOptions`），原样传给服务端。保存经官方配置编辑器写入，profile 补丁层仍是唯一事实来源。
 - **干净转写** — 默认清理 SenseVoice 风格的内联标签（`<|zh|><|HAPPY|>...`），可配置关闭。
@@ -108,6 +109,8 @@ Bundle 会插入四行：插件本体、DSH 语音转写服务（默认 provider
 | `defaultVoice` | `''`（服务端默认） | 请求未指定音色时发送的音色——**参考音色库**名称或**内置音色** ID（见下） |
 | `language` | `auto` | 默认 ASR 语言提示；`auto` 表示不发送提示 |
 | `asrMode` | `auto` | `offline` 整段解码一次返回，`stream` 增量返回转写事件。`auto` 与 `offline` 都走非实时；GUI 语音输入始终走实时。 |
+| `asrLanguages` | `['auto','zh','en','yue','ja','ko']` | GUI 语音输入语言选择器提供的语言提示。按你实际 ASR 模型支持的语言填写（如 Qwen3-ASR 支持更多）。`auto` 始终包含。 |
+| `allowOutputOutsideWorkspace` | `false` | 为 false 时 `speech_synthesize` 只能写入当前会话工作区；启用后允许任意输出路径。 |
 | `asrOptions` | `{}` | `/v1/audio/transcriptions` 的请求参数，以 `options` 表单字段发送 |
 | `ttsOptions` | `{}` | `/v1/audio/speech` 的请求参数，以 `options` 发送 |
 | `stripTags` | `true` | 清理转写文本中的 `<\|...\|>` 模型标签 |

@@ -34,15 +34,20 @@ export const Config = z.object({
   defaultVoice: z.string().default(''),
   language: z.string().default('auto'),
   asrMode: z.union([z.const('auto'), z.const('offline'), z.const('stream')]).default('auto'),
+  asrLanguages: z.array(z.string()).default(['auto', 'zh', 'en', 'yue', 'ja', 'ko']),
   stripTags: z.boolean().default(true),
   requestTimeoutMs: z.number().min(1000).default(300000),
   ffmpegPath: z.string().default('ffmpeg'),
+  allowOutputOutsideWorkspace: z.boolean().default(false),
   asrOptions: z.dict(z.union([z.string(), z.number(), z.boolean()])).default({}),
   ttsOptions: z.dict(z.union([z.string(), z.number(), z.boolean()])).default({})
 })
 
-/** Language hints advertised to the GUI picker (SenseVoice set). */
-const ASR_LANGUAGES = ['auto', 'zh', 'en', 'yue', 'ja', 'ko']
+/** Language hints advertised to the GUI picker when none are configured. */
+const DEFAULT_ASR_LANGUAGES = ['auto', 'zh', 'en', 'yue', 'ja', 'ko']
+
+/** How long a discovered model roster stays fresh for tool calls. */
+const MODELS_CACHE_TTL_MS = 30000
 
 /** Upper bound on a single transcription input, to keep the Host out of OOM. */
 const MAX_TRANSCRIBE_BYTES = 512 * 1024 * 1024
@@ -202,10 +207,14 @@ function createClient(config) {
     try {
       res = await fetch(base + path, { ...init, signal: combined })
     } catch (error) {
+      // A failed call may mean the roster changed; drop it so the next
+      // auto-discovery re-reads the server instead of trusting a stale list.
+      modelsCache = undefined
       if (signal?.aborted) throw new Error('Cancelled.')
       throw new Error(describeFailure(error, config.serverUrl))
     }
     if (!res.ok) {
+      modelsCache = undefined
       let detail = ''
       try { detail = (await res.text()).slice(0, 400) } catch { /* body unreadable */ }
       throw new Error(`audio.cpp server returned HTTP ${res.status} for ${path}${detail ? `: ${detail}` : ''}`)
@@ -215,7 +224,7 @@ function createClient(config) {
 
   /** The server's model roster, cached briefly so discovery stays cheap. */
   async function listModels(signal) {
-    if (modelsCache && Date.now() - modelsCachedAt < 60000) return modelsCache
+    if (modelsCache && Date.now() - modelsCachedAt < MODELS_CACHE_TTL_MS) return modelsCache
     const res = await request('/v1/models', {}, signal)
     const json = await res.json()
     modelsCache = Array.isArray(json.data) ? json.data : []
@@ -381,13 +390,11 @@ async function convertToWav(config, inputPath, signal) {
   return { path: out, cleanup }
 }
 
-/** Resolve a model-supplied path against the session working directory. */
-async function resolveHostPath(ctx, exec, path) {
-  const cwd = exec.agent
-    ? await ctx.workingDirectory.ensure(exec.agent, exec.signal)
-    : process.cwd()
-  const target = await ctx.fs.resolve(path, { cwd, signal: exec.signal })
-  return ctx.fs.processPath(target)
+/** Last path segment, for short card titles (pure; no node:path needed). */
+function baseName(path) {
+  const text = String(path ?? '')
+  const cut = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'))
+  return cut >= 0 ? text.slice(cut + 1) : text
 }
 
 /** Send one JSON response on a raw carrier socket. */
@@ -488,6 +495,18 @@ function sanitizeConfig(input) {
     }
     out.asrMode = input.asrMode
   }
+  if (input.asrLanguages !== undefined) {
+    if (!Array.isArray(input.asrLanguages) || input.asrLanguages.some(item => typeof item !== 'string')) {
+      throw new Error('asrLanguages must be an array of strings')
+    }
+    const cleaned = [...new Set(input.asrLanguages.map(item => item.trim()).filter(item => item !== ''))]
+    const withAuto = cleaned.includes('auto') ? cleaned : ['auto', ...cleaned]
+    out.asrLanguages = withAuto.length > 1 ? withAuto : DEFAULT_ASR_LANGUAGES
+  }
+  if (input.allowOutputOutsideWorkspace !== undefined) {
+    if (typeof input.allowOutputOutsideWorkspace !== 'boolean') throw new Error('allowOutputOutsideWorkspace must be a boolean')
+    out.allowOutputOutsideWorkspace = input.allowOutputOutsideWorkspace
+  }
   if (input.stripTags !== undefined) {
     if (typeof input.stripTags !== 'boolean') throw new Error('stripTags must be a boolean')
     out.stripTags = input.stripTags
@@ -525,9 +544,11 @@ function configView(config) {
     defaultVoice: config.defaultVoice,
     language: config.language,
     asrMode: config.asrMode,
+    asrLanguages: Array.isArray(config.asrLanguages) ? config.asrLanguages : DEFAULT_ASR_LANGUAGES,
     stripTags: config.stripTags,
     requestTimeoutMs: config.requestTimeoutMs,
     ffmpegPath: config.ffmpegPath,
+    allowOutputOutsideWorkspace: config.allowOutputOutsideWorkspace === true,
     asrOptions: config.asrOptions ?? {},
     ttsOptions: config.ttsOptions ?? {}
   }
@@ -669,6 +690,14 @@ export function apply(ctx, config) {
   const client = createClient(config)
   const log = ctx.logger('audio-cpp-plugin')
 
+  // Language hints the GUI picker offers; match them to the ASR model in use.
+  // An empty configured list falls back to the defaults so the picker is never
+  // left with only `auto`.
+  const configuredLanguages = Array.isArray(config.asrLanguages)
+    ? config.asrLanguages.filter(item => typeof item === 'string' && item.trim() !== '')
+    : DEFAULT_ASR_LANGUAGES
+  const languages = [...new Set(['auto', ...(configuredLanguages.length > 0 ? configuredLanguages : DEFAULT_ASR_LANGUAGES)])]
+
   // GUI settings page backend; inactive in profiles without a web carrier.
   registerConfigRoutes(ctx, config)
 
@@ -680,7 +709,7 @@ export function apply(ctx, config) {
         id: 'audio-cpp',
         name: 'audio.cpp ASR',
         location: 'host-local',
-        languages: ASR_LANGUAGES
+        languages
       },
       transcribe: async (input, signal) => {
         const result = await client.transcribe(input.audio, { language: input.language, signal })
@@ -721,7 +750,29 @@ export function apply(ctx, config) {
         render: (_args, value) => [{
           type: 'text',
           text: value.text || '(no speech recognized)'
-        }]
+        }],
+        presentationMeta: (args, value) => ({
+          path: args.path,
+          audioSeconds: value.audioSeconds,
+          mode: value.mode,
+          chars: value.text.length
+        })
+      },
+      presentCall: args => ({
+        card: 'generic',
+        kind: 'read',
+        title: `Transcribe ${baseName(args.path)}`,
+        locations: [{ path: args.path }]
+      }),
+      presentResult: (args, result) => {
+        if (result.isError) return undefined
+        const meta = result.meta ?? {}
+        const duration = typeof meta.audioSeconds === 'number' ? ` · ${meta.audioSeconds}s` : ''
+        return {
+          card: 'generic',
+          title: `Transcribed ${baseName(args.path)}${duration}`,
+          content: result.content
+        }
       },
       timeoutMs: 600000,
       isConcurrencySafe: () => true,
@@ -803,12 +854,54 @@ export function apply(ctx, config) {
         render: (_args, value) => [{
           type: 'text',
           text: `Speech saved to ${value.path} (${value.audioSeconds}s${value.voice ? `, voice ${value.voice}` : ''})`
-        }]
+        }],
+        presentationMeta: (_args, value) => ({
+          path: value.path,
+          audioSeconds: value.audioSeconds,
+          voice: value.voice,
+          bytes: value.bytes
+        })
+      },
+      presentCall: args => ({
+        card: 'generic',
+        kind: 'edit',
+        title: 'Synthesize speech',
+        rawInput: {
+          text: args.text.length > 120 ? `${args.text.slice(0, 120)}…` : args.text,
+          ...(args.voice ? { voice: args.voice } : {})
+        },
+        ...(args.output ? { locations: [{ path: args.output }] } : {})
+      }),
+      presentResult: (_args, result) => {
+        if (result.isError) return undefined
+        const meta = result.meta ?? {}
+        const parts = []
+        if (typeof meta.audioSeconds === 'number') parts.push(`${meta.audioSeconds}s`)
+        if (meta.voice) parts.push(meta.voice)
+        const suffix = parts.length ? ` · ${parts.join(' · ')}` : ''
+        return {
+          card: 'generic',
+          title: `Speech saved ${baseName(meta.path)}${suffix}`,
+          content: result.content
+        }
       },
       timeoutMs: 600000,
       async execute(args, exec) {
         if (args.text.trim().length === 0) throw new Error('speech_synthesize requires non-empty text')
-        const hostPath = await resolveHostPath(ctx, exec, args.output ?? `tts-${randomUUID().slice(0, 8)}.wav`)
+        const cwd = exec.agent
+          ? await ctx.workingDirectory.ensure(exec.agent, exec.signal)
+          : process.cwd()
+        const outPath = args.output ?? `tts-${randomUUID().slice(0, 8)}.wav`
+        const target = await ctx.fs.resolve(outPath, { cwd, signal: exec.signal })
+        const hostPath = ctx.fs.processPath(target)
+        // Confine output to the session workspace unless explicitly allowed, so
+        // a synthesis cannot silently write anywhere on the host filesystem.
+        if (!config.allowOutputOutsideWorkspace) {
+          const cwdTarget = await ctx.fs.resolve(cwd, { signal: exec.signal })
+          if (!ctx.fs.contains(cwdTarget, target)) {
+            throw new Error(`Output path is outside the session working directory: ${outPath}. Write inside it, or set allowOutputOutsideWorkspace to true.`)
+          }
+        }
         const { buf, voice } = await client.synthesize({
           text: args.text,
           voice: args.voice,
