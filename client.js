@@ -381,10 +381,6 @@ window.__ModuleLoader__.load({
       const capabilities = server.capabilities ?? null
       const state = status?.state ?? (server.health ? 'ok' : 'unreachable')
       const online = state === 'ok'
-      const languageChoices = Array.isArray(config.asrLanguages) && config.asrLanguages.length > 0
-        ? config.asrLanguages
-        : LANGUAGES
-      const languageValue = languageChoices.includes(config.language) ? config.language : 'auto'
 
       const save = useCallback(async () => {
         if (config === null || hasErrors) return
@@ -421,6 +417,13 @@ window.__ModuleLoader__.load({
           h('div', { className: 'aac-actions' }, h('button', { className: 'aac-btn', onClick: () => void reload() }, t('refresh')))
         )
       }
+
+      // config is non-null from here; derive the language picker options now so
+      // they never read a property of the initial null state.
+      const languageChoices = Array.isArray(config.asrLanguages) && config.asrLanguages.length > 0
+        ? config.asrLanguages
+        : LANGUAGES
+      const languageValue = languageChoices.includes(config.language) ? config.language : 'auto'
 
       return h('div', { className: 'aac-root' },
         h('style', null, css),
@@ -732,6 +735,17 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots', 'locale'],
       apply(ctx) {
+        // Defensive: if the slots service is unavailable, surface a visible
+        // diagnostic on the bundle card instead of throwing (which would drop
+        // the whole client half silently and leave no settings UI at all).
+        if (!ctx.slots || typeof ctx.slots.inject !== 'function') {
+          const reason = ctx.slots ? 'ctx.slots.inject is not a function' : 'ctx.slots is unavailable'
+          // No slots service means we cannot mount the settings card at all.
+          // Log loudly so the cause is visible in the browser console instead
+          // of the client half failing silently with no UI.
+          console.error(`[dsh-audio-cpp-plugin] settings UI could not be registered: ${reason}. Refresh the page or restart dsh web, then retry.`)
+          return
+        }
         ctx.effect(() => ctx.locale.register(NS, { zh, en }))
         ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
           name: 'plugins.bundle.config',

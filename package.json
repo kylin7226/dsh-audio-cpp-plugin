@@ -1,6 +1,6 @@
 {
   "name": "dsh-audio-cpp-plugin",
-  "version": "1.4.1",
+  "version": "1.4.3",
   "description": "Native audio capabilities for DeepSeek Harness backed by an audio.cpp server: GUI voice input (ASR/STT) plus speech_transcribe and speech_synthesize agent tools, with a settings page for server, models, and model options.",
   "type": "module",
   "license": "MIT",
@@ -59,8 +59,7 @@
     "client": {
       "platform": "web",
       "inject": [
-        "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-plugin-manager"
+        "@deepseek-ai/dsh-client-locale"
       ]
     }
   }
