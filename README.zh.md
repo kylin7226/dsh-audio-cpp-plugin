@@ -1,0 +1,147 @@
+# dsh-audio-cpp-plugin
+
+[English](README.md) | 中文
+
+为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）提供原生音频能力，底层对接 [audio.cpp](https://github.com/0xShug0/audio.cpp) 服务。
+
+audio.cpp 是纯 C++ 的 ggml 音频模型推理引擎（ASR、TTS、VAD、声音转换等），自带 OpenAI 兼容的 HTTP 服务。本插件把运行中的 audio.cpp 服务接入 DSH，变成 Harness 的原生能力——无 Python、不下载模型、不在插件内管理进程。
+
+## 功能
+
+- **GUI 语音输入** — 向 Harness 语音输入子系统注册 `speechToText` provider（`audio-cpp`），输入框的麦克风按钮直接走你的 audio.cpp ASR 模型转写。音频全程留在你自己的基础设施上。
+- **`speech_transcribe` 工具** — 把本地音频文件转成文字。WAV 直传；mp3/flac/m4a/ogg 等格式经 ffmpeg 转换。返回文本及音频/推理时长。
+- **`speech_synthesize` 工具** — 把文字合成为本地 WAV 文件，可选音色与语气指令。未指定音色时用服务端默认；对需要参考音频的零样本模型（如 CosyVoice3），自动取音色库第一个音色。Agent 可用 `present` 把音频交付给你。
+- **模型自动发现** — 模型 id 可配置，也可留空由插件从服务端 `/v1/models` 按任务（`asr` / `tts`）自动选取。
+- **干净转写** — 默认清理 SenseVoice 风格的内联标签（`<|zh|><|HAPPY|>...`），可配置关闭。
+
+插件是无状态 HTTP 客户端：audio.cpp 服务、模型与音色库均由你自行拥有和管理。
+
+## 环境要求
+
+| 要求 | 说明 |
+|---|---|
+| DeepSeek Harness `>= 0.2.2-rc.1` | 使用 DSH 自带的实验性语音输入包 |
+| 运行中的 [audio.cpp](https://github.com/0xShug0/audio.cpp) 服务 | 至少注册一个 ASR 模型和一个 TTS 模型，见下文 |
+| ffmpeg（可选） | 仅转写非 WAV 文件时需要；在宿主 PATH 中或配置 `ffmpegPath` |
+
+### 搭建 audio.cpp 服务
+
+从 [audio.cpp releases](https://github.com/0xShug0/audio.cpp/releases) 下载预编译二进制（CPU、CUDA、Vulkan、Metal 等），从 [audio.cpp GGUF 仓库](https://huggingface.co/audio-cpp/audio.cpp-gguf) 安装模型，并在服务配置中注册：
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 8080,
+  "backend": "cpu",
+  "lazy_load": true,
+  "models": [
+    {
+      "id": "my-asr",
+      "family": "sense_asr",
+      "path": "/path/to/models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf",
+      "task": "asr",
+      "mode": "offline"
+    },
+    {
+      "id": "my-tts",
+      "family": "cosyvoice3",
+      "path": "/path/to/models/CosyVoice3-GGUF/cosyvoice3-q8_0.gguf",
+      "task": "tts",
+      "mode": "offline"
+    }
+  ]
+}
+```
+
+```sh
+audiocpp_server --config server.json
+```
+
+audio.cpp 支持的任意 ASR/TTS 模型家族均可（Qwen3-ASR、Fun-ASR-Nano、Kokoro、Qwen3-TTS 等）。完整选项、音色库（`voice_dir`）与流式模式见 [audio.cpp 服务指南](https://github.com/0xShug0/audio.cpp/blob/main/app/server/README.md) 和 [模型文档](https://github.com/0xShug0/audio.cpp/blob/main/docs/usage.md)。
+
+## 安装
+
+npm（推荐）：
+
+```sh
+dsh plugin --profile web add dsh-audio-cpp-plugin
+```
+
+或从 GitHub 源码安装：
+
+```sh
+dsh plugin --profile web add github:kylin7226/dsh-audio-cpp-plugin
+```
+
+收录进 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 目录后，也可在插件页的 [dsh-market](https://github.com/dsh-market/dsh-market) 市场中一键安装。
+
+Bundle 会插入四行：插件本体、DSH 语音转写服务（默认 provider `audio-cpp`）、语音 Web Remote、语音输入 UI。安装后刷新浏览器页面，输入框即出现麦克风按钮。
+
+## 配置
+
+在 profile 的 `cordis.patch.yml`（用户补丁层）中指向你的服务：
+
+```yaml
+- id: audio-cpp-plugin
+  name: dsh-audio-cpp-plugin
+  config:
+    serverUrl: http://127.0.0.1:8080
+    asrModel: my-asr        # 可选；留空则从 /v1/models 自动发现
+    ttsModel: my-tts        # 可选；留空则从 /v1/models 自动发现
+    defaultVoice: demo_3_woman  # 可选；留空则用服务端默认
+```
+
+| 字段 | 默认值 | 含义 |
+|---|---|---|
+| `serverUrl` | `http://127.0.0.1:8080` | audio.cpp 服务地址 |
+| `asrModel` | `''`（自动） | 转写用的服务端模型 id；留空取第一个 `asr` 模型 |
+| `ttsModel` | `''`（自动） | 合成用的服务端模型 id；留空取第一个 `tts` 模型 |
+| `defaultVoice` | `''`（服务端默认） | 请求未指定音色时发送的音色 |
+| `language` | `auto` | 默认 ASR 语言提示；`auto` 表示不发送提示 |
+| `stripTags` | `true` | 清理转写文本中的 `<\|...\|>` 模型标签 |
+| `requestTimeoutMs` | `300000` | 单请求超时 |
+| `ffmpegPath` | `ffmpeg` | 非 WAV 转换用的 ffmpeg 可执行文件 |
+
+## 使用
+
+**语音输入** — 点击输入框麦克风，说话，识别文本直接进入输入框。Provider 向 GUI 提供 SenseVoice 语言集（`auto, zh, en, yue, ja, ko`）；其他 ASR 模型可通过工具接受更多语言提示。
+
+**Agent 工具** — 直接用自然语言吩咐，例如：
+
+> “把 meeting.mp3 转成文字” → `speech_transcribe { path: "meeting.mp3" }`
+>
+> “把这段总结朗读出来给我” → `speech_synthesize { text: "...", output: "summary.wav" }` 然后 `present`
+
+`speech_synthesize` 参数：`text`（必填）、`output`（WAV 路径，默认会话工作目录下 `tts-<id>.wav`）、`voice`（服务端音色库名或模型原生音色 id）、`instruct`（语气指令，仅 instruct 类模型生效）。
+
+## 工作原理
+
+```
+GUI 麦克风 ──> DSH speechToText 服务 ──> provider "audio-cpp" ─┐
+speech_transcribe 工具 ──────────────────────────────────────┤──> audio.cpp 服务
+speech_synthesize 工具 ──────────────────────────────────────┘    /v1/audio/transcriptions
+                                                                  /v1/audio/speech
+```
+
+- 转写以 multipart 上传 WAV 字节到 `/v1/audio/transcriptions`；非 WAV 输入先经 ffmpeg 转为 16 kHz 单声道 PCM16。
+- 合成向 `/v1/audio/speech` 发送 JSON，把返回的 WAV 写入指定路径。
+- 所有请求转发调用方的取消信号并受可配置超时约束；工具调用与 Harness 超时策略协作。
+- 激活时探测一次 `/health` 与 `/v1/models` 并记录连接结果；不下载、不启动任何东西。
+
+已在 audio.cpp v0.9.4（Vulkan 后端）上用 SenseVoice-Small（`sense_asr`）与 CosyVoice3（`cosyvoice3`）实测。
+
+## 路线图
+
+audio.cpp 的能力远不止 ASR/TTS——还有 VAD、说话人分离、声音转换、音源分离、音乐生成等。本插件的客户端架构与任务无关，可在同一服务连接上继续扩展工具。欢迎贡献。
+
+## 开发
+
+纯 JavaScript（ESM），无构建步骤。`@deepseek-ai/*` peer 包由宿主在运行时从 DSH 安装中解析。
+
+```sh
+node --check index.js
+```
+
+## 许可证
+
+[MIT](LICENSE) · 基于 [audio.cpp](https://github.com/0xShug0/audio.cpp) 构建（引擎与模型权重的许可证见其仓库）。

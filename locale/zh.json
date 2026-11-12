@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "audio.cpp 语音",
+    "description": "基于 audio.cpp 服务的原生语音识别与合成：GUI 麦克风语音输入，以及 speech_transcribe（音频转文字）和 speech_synthesize（文字合成语音）工具。"
+  }
+}

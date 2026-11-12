@@ -1,0 +1,58 @@
+{
+  "name": "dsh-audio-cpp-plugin",
+  "version": "1.0.0",
+  "description": "Native audio capabilities for DeepSeek Harness backed by an audio.cpp server: GUI voice input (ASR/STT) plus speech_transcribe and speech_synthesize agent tools.",
+  "type": "module",
+  "license": "MIT",
+  "author": "kylin7226",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kylin7226/dsh-audio-cpp-plugin.git"
+  },
+  "homepage": "https://github.com/kylin7226/dsh-audio-cpp-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/kylin7226/dsh-audio-cpp-plugin/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "audio-cpp",
+    "audio",
+    "speech",
+    "asr",
+    "stt",
+    "tts",
+    "voice-input",
+    "speech-to-text",
+    "text-to-speech"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "assets/icon-180.png",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "dsh": ">=0.2.2-rc.1 <0.3.0-0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "^0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

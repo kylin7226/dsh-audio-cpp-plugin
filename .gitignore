@@ -1,0 +1,11 @@
+# Dependencies (resolved by the DSH host at runtime; never commit)
+node_modules
+
+# Local test artifacts
+*.wav
+*.mp3
+.probe/
+
+# OS / editor noise
+.DS_Store
+*.log
