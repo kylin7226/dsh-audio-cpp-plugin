@@ -33,6 +33,7 @@ export const Config = z.object({
   ttsModel: z.string().default(''),
   defaultVoice: z.string().default(''),
   language: z.string().default('auto'),
+  asrMode: z.union([z.const('auto'), z.const('offline'), z.const('stream')]).default('auto'),
   stripTags: z.boolean().default(true),
   requestTimeoutMs: z.number().min(1000).default(300000),
   ffmpegPath: z.string().default('ffmpeg'),
@@ -66,6 +67,67 @@ function wavSeconds(buf) {
     off += 8 + size + (size & 1)
   }
   return undefined
+}
+
+/**
+ * Read the server's transcription SSE stream into one final transcript.
+ * Emits `transcript.text.delta` events and ends with `transcript.text.done`
+ * (or `[DONE]`); returns undefined when the stream carried no usable result,
+ * so the caller can fall back to a JSON body.
+ */
+async function readTranscriptionStream(body, signal) {
+  if (body === null) return undefined
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let finalText
+  let firstDeltaAt
+  let ttftMs
+  const started = Date.now()
+
+  const handle = chunk => {
+    const type = chunk?.type
+    if (typeof type !== 'string') return
+    if (type === 'transcript.text.delta' && firstDeltaAt === undefined) firstDeltaAt = Date.now()
+    if (type === 'transcript.text.done') {
+      finalText = String(chunk.text ?? '')
+      ttftMs = chunk.timing?.ttft_ms
+    }
+    // A streamed failure ends without a done event; surface it instead of
+    // silently returning partial text.
+    if (type === 'error') {
+      throw new Error(`audio.cpp streaming transcription failed: ${chunk.error?.message ?? 'unknown error'}`)
+    }
+  }
+
+  for await (const part of body) {
+    signal?.throwIfAborted()
+    buffer += decoder.decode(part, { stream: true })
+    let boundary = buffer.indexOf('\n')
+    while (boundary !== -1) {
+      const line = buffer.slice(0, boundary).trim()
+      buffer = buffer.slice(boundary + 1)
+      if (line.startsWith('data:')) {
+        const payload = line.slice(5).trim()
+        if (payload === '[DONE]') break
+        if (payload !== '') {
+          try { handle(JSON.parse(payload)) } catch (error) {
+            if (error instanceof SyntaxError) continue
+            throw error
+          }
+        }
+      }
+      boundary = buffer.indexOf('\n')
+    }
+  }
+
+  if (finalText === undefined) return undefined
+  const elapsedMs = ttftMs ?? (firstDeltaAt === undefined ? undefined : firstDeltaAt - started)
+  return {
+    text: finalText,
+    audioSeconds: 0,
+    inferenceSeconds: 0,
+    timeToFirstTextSeconds: elapsedMs === undefined ? undefined : elapsedMs / 1000
+  }
 }
 
 /** One place that turns transport failures into actionable messages. */
@@ -136,16 +198,37 @@ function createClient(config) {
   }
 
   /** Transcribe complete WAV bytes; returns text plus measured durations. */
-  async function transcribe(wavBytes, { language, model, signal, filename = 'audio.wav' } = {}) {
+  async function transcribe(wavBytes, { language, model, signal, filename = 'audio.wav', stream } = {}) {
+    const modelId = model ?? await resolveModel('asr', config.asrModel, signal)
     const form = new FormData()
-    form.append('model', model ?? await resolveModel('asr', config.asrModel, signal))
+    form.append('model', modelId)
     form.append('file', new Blob([wavBytes], { type: 'audio/wav' }), filename)
     const hint = language ?? config.language
     if (hint && hint !== 'auto') form.append('language', hint)
     if (config.asrOptions && Object.keys(config.asrOptions).length > 0) {
       form.append('options', JSON.stringify(config.asrOptions))
     }
+    // Streaming asks the server to emit transcript deltas while it decodes the
+    // already-uploaded recording; it shortens time-to-first-text but never
+    // changes the final transcript.
+    const wantStream = stream ?? config.asrMode === 'stream'
+    if (wantStream) form.append('stream', 'true')
+
     const res = await request('/v1/audio/transcriptions', { method: 'POST', body: form }, signal)
+    if (wantStream && (res.headers.get('content-type') ?? '').includes('text/event-stream')) {
+      const streamed = await readTranscriptionStream(res.body, signal)
+      if (streamed !== undefined) {
+        const text = config.stripTags ? stripModelTags(streamed.text) : streamed.text
+        return {
+          text,
+          audioSeconds: streamed.audioSeconds || wavSeconds(wavBytes) || 0,
+          inferenceSeconds: streamed.inferenceSeconds,
+          timeToFirstTextSeconds: streamed.timeToFirstTextSeconds,
+          mode: 'stream'
+        }
+      }
+    }
+
     const json = await res.json()
     const raw = String(json.text ?? '')
     const text = config.stripTags ? stripModelTags(raw) : raw
@@ -153,7 +236,8 @@ function createClient(config) {
     return {
       text,
       audioSeconds: (timing.audio_duration_ms ?? 0) / 1000 || wavSeconds(wavBytes) || 0,
-      inferenceSeconds: (timing.wall_ms ?? 0) / 1000
+      inferenceSeconds: (timing.wall_ms ?? 0) / 1000,
+      mode: 'offline'
     }
   }
 
@@ -336,6 +420,12 @@ function sanitizeConfig(input) {
       out[key] = input[key]
     }
   }
+  if (input.asrMode !== undefined) {
+    if (!['auto', 'offline', 'stream'].includes(input.asrMode)) {
+      throw new Error('asrMode must be auto, offline, or stream')
+    }
+    out.asrMode = input.asrMode
+  }
   if (input.stripTags !== undefined) {
     if (typeof input.stripTags !== 'boolean') throw new Error('stripTags must be a boolean')
     out.stripTags = input.stripTags
@@ -372,6 +462,7 @@ function configView(config) {
     ttsModel: config.ttsModel,
     defaultVoice: config.defaultVoice,
     language: config.language,
+    asrMode: config.asrMode,
     stripTags: config.stripTags,
     requestTimeoutMs: config.requestTimeoutMs,
     ffmpegPath: config.ffmpegPath,
@@ -519,7 +610,9 @@ export function apply(ctx, config) {
           properties: {
             text: { type: 'string', required: true, description: 'Recognized text; empty when no speech was found.' },
             audioSeconds: { type: 'number', required: true, description: 'Input audio duration.' },
-            inferenceSeconds: { type: 'number', required: true, description: 'Server inference wall time.' }
+            inferenceSeconds: { type: 'number', required: true, description: 'Server inference wall time.' },
+            mode: { type: 'string', required: true, description: 'Recognition path used: stream (incremental transcript events) or offline.' },
+            timeToFirstTextSeconds: { type: 'number', description: 'Stream mode only: time until the first transcript event.' }
           }
         },
         render: (_args, value) => [{
@@ -551,11 +644,16 @@ export function apply(ctx, config) {
         try {
           exec.signal.throwIfAborted()
           const result = await client.transcribe(wavBytes, { language: args.language, signal: exec.signal })
-          return {
+          const value = {
             text: result.text,
             audioSeconds: round3(result.audioSeconds),
-            inferenceSeconds: round3(result.inferenceSeconds)
+            inferenceSeconds: round3(result.inferenceSeconds),
+            mode: result.mode
           }
+          if (result.timeToFirstTextSeconds !== undefined) {
+            value.timeToFirstTextSeconds = round3(result.timeToFirstTextSeconds)
+          }
+          return value
         } finally {
           await cleanup()
         }

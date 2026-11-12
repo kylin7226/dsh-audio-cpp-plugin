@@ -12,6 +12,7 @@ audio.cpp 是纯 C++ 的 ggml 音频模型推理引擎（ASR、TTS、VAD、声�
 - **`speech_transcribe` 工具** — 把本地音频文件转成文字。WAV 直传；mp3/flac/m4a/ogg 等格式经 ffmpeg 转换。返回文本及音频/推理时长。
 - **`speech_synthesize` 工具** — 把文字合成为本地 WAV 文件，可选音色与语气指令。未指定音色时用服务端默认；对需要参考音频的零样本模型（如 CosyVoice3），自动取音色库第一个音色。Agent 可用 `present` 把音频交付给你。
 - **模型自动发现** — 模型 id 可配置，也可留空时由插件从服务端 `/v1/models` 按任务（`asr` / `tts`）自动选取。
+- **实时 / 非实时识别** — 可让服务端边解码边返回转写事件（`stream`），或整段解码后一次返回（`offline`）；`speech_transcribe` 结果会标明实际走的路径，流式时还给出首个文本耗时。
 - **模型选项** — 可传入服务端模型声明的任意请求参数（`asrOptions` / `ttsOptions`），如 ITN、分块长度、采样控制等。
 - **设置页面** — 插件在 **插件页** 的卡片上有配置表单：服务器地址与实时连接状态、ASR/TTS 模型选择、音色、识别语言。主表单保持模型无关：某个模型家族特有的参数放在 **高级设置** 里，按 `key = value` 逐行填写（`asrOptions` / `ttsOptions`），原样传给服务端。保存经官方配置编辑器写入，profile 补丁层仍是唯一事实来源。
 - **干净转写** — 默认清理 SenseVoice 风格的内联标签（`<|zh|><|HAPPY|>...`），可配置关闭。
@@ -106,6 +107,7 @@ Bundle 会插入四行：插件本体、DSH 语音转写服务（默认 provider
 | `ttsModel` | `''`（自动） | 合成用的服务端模型 id；留空取第一个 `tts` 模型 |
 | `defaultVoice` | `''`（服务端默认） | 请求未指定音色时发送的音色——**参考音色库**名称或**内置音色** ID（见下） |
 | `language` | `auto` | 默认 ASR 语言提示；`auto` 表示不发送提示 |
+| `asrMode` | `auto` | `offline` 整段解码一次返回，`stream` 增量返回转写事件。`auto` 与 `offline` 都走非实时；GUI 语音输入始终走实时。 |
 | `asrOptions` | `{}` | `/v1/audio/transcriptions` 的请求参数，以 `options` 表单字段发送 |
 | `ttsOptions` | `{}` | `/v1/audio/speech` 的请求参数，以 `options` 发送 |
 | `stripTags` | `true` | 清理转写文本中的 `<\|...\|>` 模型标签 |
@@ -122,6 +124,15 @@ audio.cpp 的 TTS 模型选音色方式不同，设置页对两者做了区分�
 - **内置音色** — 打包在模型权重里的说话人（如 Kokoro 的 `af_heart` / `zf_xiaoxiao`、Qwen3-TTS CustomVoice 的 `Vivian`）。服务端**不会**枚举它们，需按该模型文档填写 ID；设置页会把不在音色库里的值标为「自定义 / 内置 ID」。
 
 若合成报 `requires reference audio`，说明所选模型没有内置音色，需要改用参考音色库中的音色。
+
+### 实时与非实时识别
+
+audio.cpp 提供两种转写方式，插件都支持：
+
+- **非实时**（`asrMode: offline`，默认 `auto` 同此）— 服务端整段解码后一次返回，短音频最简单。
+- **实时**（`asrMode: stream`）— 服务端在解码已上传音频的过程中持续推送 `transcript.text.delta` 事件，以 `transcript.text.done` 结束。插件把这些事件拼成最终文本，并报告 `timeToFirstText`；长音频下首个文本远早于整体解码完成。
+
+实时需要服务端把 ASR 模型配置成 `"mode": "streaming"`。若模型只支持非实时，服务端会返回普通 JSON，插件透明读取。两种方式最终文本一致。插件没有使用 `/v1/audio/transcriptions/live`（边说边传 PCM）：DSH 语音输入是每句话提交一段完整录音，暂无增量音频可推送。
 
 ## 使用
 

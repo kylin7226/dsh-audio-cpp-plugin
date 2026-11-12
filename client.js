@@ -41,6 +41,11 @@ window.__ModuleLoader__.load({
       voiceEffective: '当前将发送 voice = {voice}',
       voiceServerDefault: '当前不发送音色，由服务端选择；若模型要求参考音频且未配置默认音色，将自动使用参考音色库第一个',
       language: '识别语言',
+      asrMode: '识别方式',
+      asrModeHint: '实时：服务端边解码边返回转写事件（需模型支持 streaming）；非实时：整段解码后一次返回',
+      asrModeAuto: '自动（改为非实时；实时由 GUI 语音输入使用）',
+      asrModeOffline: '非实时（整段解码）',
+      asrModeStream: '实时（流式转写）',
       refresh: '刷新',
       refreshing: '刷新中…',
       save: '保存',
@@ -86,6 +91,11 @@ window.__ModuleLoader__.load({
       voiceEffective: 'Requests will send voice = {voice}',
       voiceServerDefault: 'No voice is sent; the server decides, falling back to the first reference voice when the model requires reference audio',
       language: 'Recognition language',
+      asrMode: 'Recognition mode',
+      asrModeHint: 'Stream: the server returns transcript events while decoding (requires a streaming-capable model). Offline: decode the whole recording, then answer once.',
+      asrModeAuto: 'Automatic (offline; GUI voice input streams)',
+      asrModeOffline: 'Offline (whole recording)',
+      asrModeStream: 'Stream (incremental transcript)',
       refresh: 'Refresh',
       refreshing: 'Refreshing…',
       save: 'Save',
@@ -403,6 +413,19 @@ window.__ModuleLoader__.load({
               disabled: busy,
               onChange: event => patch('language', event.target.value)
             }, LANGUAGES.map(code => h('option', { key: code, value: code }, code)))
+          ),
+
+          h(Row, { label: t('asrMode'), hint: t('asrModeHint') },
+            h('select', {
+              className: 'aac-control',
+              value: config.asrMode ?? 'auto',
+              disabled: busy,
+              onChange: event => patch('asrMode', event.target.value)
+            },
+              h('option', { value: 'auto' }, t('asrModeAuto')),
+              h('option', { value: 'offline' }, t('asrModeOffline')),
+              h('option', { value: 'stream' }, t('asrModeStream'))
+            )
           )
         ),
 

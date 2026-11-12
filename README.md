@@ -12,6 +12,7 @@ audio.cpp is a pure-C++ ggml inference engine for audio models (ASR, TTS, VAD, v
 - **`speech_transcribe` agent tool** — transcribe a local audio file to text. WAV is sent directly; mp3/flac/m4a/ogg and other formats are converted with ffmpeg. Returns text plus audio/inference durations.
 - **`speech_synthesize` agent tool** — synthesize text to a local WAV file, with optional voice selection and speaking-style instruction. When no voice is given, the server default applies; for zero-shot models that require reference audio (e.g. CosyVoice3), the first voice-library entry is used. The agent can deliver the file to you with `present`.
 - **Model auto-discovery** — model ids come from configuration, or are discovered from the server's `/v1/models` roster by task (`asr` / `tts`).
+- **Streaming or offline recognition** — ask the server for incremental transcript events (`stream`) or a single answer after decoding (`offline`); the `speech_transcribe` result reports which path ran and, for streaming, time to first text.
 - **Model options** — pass any request option your server model declares (`asrOptions` / `ttsOptions`), e.g. ITN, chunk size, sampling controls.
 - **Settings page** — the plugin's card under **Plugins** has a configuration form: server URL with a live connection status, ASR/TTS model pickers, voice picker, and language. It stays model-agnostic: anything specific to one model family goes under **Advanced settings** as plain `key = value` lines (`asrOptions` / `ttsOptions`), forwarded to the server unchanged. Values are written through the official config editor, so the profile patch stays the source of truth.
 - **Clean transcripts** — SenseVoice-style inline tags (`<|zh|><|HAPPY|>...`) are stripped by default (configurable).
@@ -106,6 +107,7 @@ The same fields are editable by hand in the profile's `cordis.patch.yml` (the us
 | `ttsModel` | `''` (auto) | Server model id for synthesis; empty picks the first `tts` model |
 | `defaultVoice` | `''` (server default) | Voice sent when a request omits one — a **reference-library** name or a **built-in** voice id (see below) |
 | `language` | `auto` | Default ASR language hint; `auto` omits the hint |
+| `asrMode` | `auto` | `offline` for one answer, `stream` for incremental transcript events. `auto` and `offline` both use the offline path; the GUI voice input always streams. |
 | `asrOptions` | `{}` | Request options for `/v1/audio/transcriptions`, sent as the `options` form field |
 | `ttsOptions` | `{}` | Request options for `/v1/audio/speech`, sent as `options` |
 | `stripTags` | `true` | Strip `<\|...\|>` model tags from transcripts |
@@ -122,6 +124,15 @@ audio.cpp TTS models differ in how a voice is selected, and the settings page di
 - **Built-in voices** — speaker packs packaged inside the model weights (for example Kokoro's `af_heart` / `zf_xiaoxiao`, or Qwen3-TTS CustomVoice's `Vivian`). The server does **not** enumerate them; enter the id the model's documentation specifies. The page marks anything outside the reference library as `custom / built-in id`.
 
 If a synthesis fails with `requires reference audio`, the selected model has no built-in voice and needs a reference-library entry instead.
+
+### Streaming and offline recognition
+
+audio.cpp serves transcription two ways, and the plugin supports both:
+
+- **Offline** (`asrMode: offline`, also the default `auto`) — the server decodes the whole recording and answers once. Simplest and best for short clips.
+- **Streaming** (`asrMode: stream`) — the server emits `transcript.text.delta` events while it decodes the already-uploaded file, ending with `transcript.text.done`. The plugin assembles those events into the final transcript and reports `timeToFirstText`; on long recordings the first text arrives well before the whole decode finishes.
+
+Streaming requires an ASR model configured with `"mode": "streaming"` on the server. Against an offline-only model the server answers with a normal JSON body, which the plugin reads transparently. Either way the final transcript is the same. `GET /v1/audio/transcriptions/live` (raw PCM sent while the user speaks) is not used: the DSH voice input submits one finished recording per utterance, so there is nothing to deliver incrementally yet.
 
 ## Usage
 
