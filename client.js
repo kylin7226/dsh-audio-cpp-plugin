@@ -30,6 +30,26 @@ window.__ModuleLoader__.load({
       capStreaming: '支持实时',
       capLoaded: '已加载',
       missingModels: '以下配置的模型已不在服务端列表中：',
+      healthStatus: '服务状态',
+      version: '版本',
+      commit: '提交',
+      healthModels: '服务端已配置模型数',
+      capabilitySummary: '能力汇总',
+      modelsTitle: '服务端模型',
+      modelsUnavailable: '无法读取模型列表',
+      noModels: '服务端未返回任何模型',
+      colModel: '模型 ID',
+      colFamily: '模型家族',
+      colTask: '任务',
+      colMode: '模式',
+      colDevice: '设备',
+      colConfigured: '已配置',
+      colLoaded: '已加载',
+      chipSelected: '已选',
+      chipAuto: '自动选中',
+      yes: '是',
+      no: '否',
+      unknown: '未知',
       status: '连接状态',
       online: '已连接',
       offline: '无法连接',
@@ -37,7 +57,6 @@ window.__ModuleLoader__.load({
       asrModel: '语音识别模型（ASR）',
       ttsModel: '语音合成模型（TTS）',
       auto: '自动（第一个同类模型）',
-      noModels: '服务端未返回模型，请检查地址',
       defaultVoice: '默认音色',
       serverDefaultVoice: '留空则由服务端决定',
       voiceHint: '填参考音色库名称，或模型自带的内置音色 ID（是否支持取决于所选模型）',
@@ -88,6 +107,26 @@ window.__ModuleLoader__.load({
       capStreaming: 'streaming',
       capLoaded: 'loaded',
       missingModels: 'Configured models no longer present on the server:',
+      healthStatus: 'Service status',
+      version: 'Version',
+      commit: 'Commit',
+      healthModels: 'Models configured',
+      capabilitySummary: 'Capabilities',
+      modelsTitle: 'Server models',
+      modelsUnavailable: 'The model list could not be read',
+      noModels: 'The server advertises no models',
+      colModel: 'Model id',
+      colFamily: 'Family',
+      colTask: 'Task',
+      colMode: 'Mode',
+      colDevice: 'Device',
+      colConfigured: 'Configured',
+      colLoaded: 'Loaded',
+      chipSelected: 'selected',
+      chipAuto: 'auto',
+      yes: 'yes',
+      no: 'no',
+      unknown: 'unknown',
       status: 'Status',
       online: 'Connected',
       offline: 'Unreachable',
@@ -95,7 +134,6 @@ window.__ModuleLoader__.load({
       asrModel: 'Speech recognition model (ASR)',
       ttsModel: 'Speech synthesis model (TTS)',
       auto: 'Automatic (first of this task)',
-      noModels: 'The server returned no models; check the URL',
       defaultVoice: 'Default voice',
       serverDefaultVoice: 'Empty: the server decides',
       voiceHint: 'A reference-library name, or a built-in voice id the selected model packages',
@@ -214,6 +252,22 @@ window.__ModuleLoader__.load({
 .aac-btn:disabled { opacity: .55; cursor: default; }
 .aac-msg.ok { color: var(--dsw-alias-state-success-primary); }
 .aac-msg.err { color: var(--dsw-alias-state-error-primary); }
+.aac-panel { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 9px;
+  background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l1); }
+.aac-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.aac-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 0; font-size: 12px; }
+.aac-kv dt { color: var(--dsw-alias-label-secondary); }
+.aac-kv dd { margin: 0; color: var(--dsw-alias-label-primary); word-break: break-word; }
+.aac-table-wrap { overflow-x: auto; }
+.aac-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.aac-table th { text-align: left; font-weight: 500; white-space: nowrap; padding: 6px 10px 6px 0;
+  color: var(--dsw-alias-label-secondary); border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.aac-table td { padding: 6px 10px 6px 0; border-bottom: 1px solid var(--dsw-alias-border-l1); vertical-align: middle; }
+.aac-table tr:last-child td { border-bottom: none; }
+.aac-table tr.aac-selected td { background: var(--dsw-alias-bg-layer-1); }
+.aac-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.aac-table td .aac-chip { margin-left: 8px; }
+.aac-ok { color: var(--dsw-alias-state-success-primary); }
 `
 
     function api(path) {
@@ -306,8 +360,11 @@ window.__ModuleLoader__.load({
       const hasErrors = asrParsed.errors.length > 0 || ttsParsed.errors.length > 0
 
       const models = Array.isArray(server.models) ? server.models : []
+      const list = models
       const asrModels = models.filter(model => model.task === 'asr')
       const ttsModels = models.filter(model => model.task === 'tts')
+      // The TTS model the form is showing, used so a voice refresh follows it.
+      const currentTtsModel = config?.ttsModel || ''
       const voices = Array.isArray(server.voices) ? server.voices : []
       const capabilities = server.capabilities ?? null
       const state = status?.state ?? (server.health ? 'ok' : 'unreachable')
@@ -352,38 +409,107 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'aac-root' },
         h('style', null, css),
 
-        h('div', { className: 'aac-head' },
-          h('span', { className: `aac-dot ${online ? 'on' : state === 'degraded' ? 'warn' : 'off'}` }),
-          h('span', { className: 'aac-title' }, t('status')),
-          h('span', { className: 'aac-muted' }, t(`state_${state}`)),
-          online && server.health?.backend
-            ? h('span', { className: 'aac-muted' }, `· ${t('backend')} ${server.health.backend}${server.health.version ? ` · ${server.health.version}` : ''}`)
+        // Service state, reported straight from the server's own API.
+        h('section', { className: 'aac-panel' },
+          h('div', { className: 'aac-panel-head' },
+            h('div', { className: 'aac-head' },
+              h('span', { className: `aac-dot ${online ? 'on' : state === 'degraded' ? 'warn' : 'off'}` }),
+              h('span', { className: 'aac-title' }, t('status')),
+              h('span', { className: 'aac-muted' }, t(`state_${state}`)),
+              online && server.health?.backend
+                ? h('span', { className: 'aac-muted' },
+                  `· ${t('backend')} ${server.health.backend}${server.health.version ? ` · ${server.health.version}` : ''}`)
+                : null
+            ),
+            h('button', {
+              className: 'aac-btn',
+              disabled: loading || busy,
+              onClick: () => void reload(currentTtsModel)
+            }, loading ? t('refreshing') : t('refresh'))
+          ),
+
+          state !== 'ok'
+            ? h('div', { className: 'aac-error' }, `${t(`state_${state}`)}${status?.detail ? `: ${status.detail}` : ''}`)
             : null,
-          h('button', {
-            className: 'aac-btn',
-            disabled: loading || busy,
-            onClick: () => void reload()
-          }, loading ? t('refreshing') : t('refresh'))
+
+          online
+            ? h('dl', { className: 'aac-kv' },
+              h('dt', null, t('healthStatus')),
+              h('dd', null, server.health?.status ?? t('unknown')),
+              h('dt', null, t('backend')),
+              h('dd', null, server.health?.backend ?? t('unknown')),
+              h('dt', null, t('version')),
+              h('dd', null, server.health?.version ?? t('unknown')),
+              server.health?.git ? [h('dt', null, t('commit')), h('dd', null, server.health.git)] : null,
+              h('dt', null, t('healthModels')),
+              h('dd', null, String(server.health?.models ?? list.length)),
+              capabilities
+                ? [h('dt', null, t('capabilitySummary')),
+                  h('dd', null, [
+                    `${t('capAsr')} ${capabilities.asr}`,
+                    `${t('capTts')} ${capabilities.tts}`,
+                    `${t('capStreaming')} ${capabilities.streamingAsr}`,
+                    `${t('capLoaded')} ${capabilities.loaded}`
+                  ].join(' · '))]
+                : null
+            )
+            : null,
+
+          capabilities && capabilities.missing?.length > 0
+            ? h('div', { className: 'aac-error' }, `${t('missingModels')} ${capabilities.missing.join(', ')}`)
+            : null
         ),
 
-        // Everything reported here comes from the server's own API.
-        state !== 'ok'
-          ? h('div', { className: 'aac-error' }, `${t(`state_${state}`)}${status?.detail ? `: ${status.detail}` : ''}`)
-          : null,
-
-        capabilities
-          ? h('div', { className: 'aac-hint' },
-            [
-              `${t('capAsr')} ${capabilities.asr}`,
-              `${t('capTts')} ${capabilities.tts}`,
-              `${t('capStreaming')} ${capabilities.streamingAsr}`,
-              `${t('capLoaded')} ${capabilities.loaded}`
-            ].join(' · '))
-          : null,
-
-        capabilities && capabilities.missing?.length > 0
-          ? h('div', { className: 'aac-error' }, `${t('missingModels')} ${capabilities.missing.join(', ')}`)
-          : null,
+        // Every model the server advertises, with the facts it reports per model.
+        h('section', { className: 'aac-panel' },
+          h('div', { className: 'aac-panel-head' },
+            h('span', { className: 'aac-title' }, t('modelsTitle')),
+            models.length > 0 ? h('span', { className: 'aac-muted' }, String(models.length)) : null
+          ),
+          models.length === 0
+            ? h('div', { className: 'aac-hint' }, online ? t('noModels') : t('modelsUnavailable'))
+            : h('div', { className: 'aac-table-wrap' },
+              h('table', { className: 'aac-table' },
+                h('thead', null, h('tr', null,
+                  h('th', null, t('colModel')),
+                  h('th', null, t('colFamily')),
+                  h('th', null, t('colTask')),
+                  h('th', null, t('colMode')),
+                  h('th', null, t('colDevice')),
+                  h('th', null, t('colConfigured')),
+                  h('th', null, t('colLoaded'))
+                )),
+                h('tbody', null, models.map(model => {
+                  const isSelected = model.id === config.asrModel || model.id === config.ttsModel
+                  const isEffective = (!config.asrModel && model.task === 'asr' && model.id === asrModels[0]?.id) ||
+                    (!config.ttsModel && model.task === 'tts' && model.id === ttsModels[0]?.id)
+                  return h('tr', {
+                    key: model.id,
+                    className: isSelected || isEffective ? 'aac-selected' : undefined
+                  },
+                    h('td', null,
+                      h('span', { className: 'aac-mono' }, model.id),
+                      isSelected
+                        ? h('span', { className: 'aac-chip' }, t('chipSelected'))
+                        : isEffective
+                          ? h('span', { className: 'aac-chip' }, t('chipAuto'))
+                          : null
+                    ),
+                    h('td', null, h('span', { className: 'aac-mono' }, model.family ?? '—')),
+                    h('td', null, model.task ?? '—'),
+                    h('td', null, model.mode ?? '—'),
+                    h('td', null, model.device === undefined ? '—' : String(model.device)),
+                    h('td', null, model.configured === true
+                      ? h('span', { className: 'aac-muted' }, t('yes'))
+                      : h('span', { className: 'aac-muted' }, t('no'))),
+                    h('td', null, model.loaded === true
+                      ? h('span', { className: 'aac-ok' }, t('yes'))
+                      : h('span', { className: 'aac-muted' }, t('no')))
+                  )
+                }))
+              )
+            )
+        ),
 
         // Model-agnostic fields only: these mean the same thing for every family.
         h('div', { className: 'aac-grid' },
