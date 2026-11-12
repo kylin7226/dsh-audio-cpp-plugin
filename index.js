@@ -13,7 +13,7 @@
  * from configuration or discovered from the server's /v1/models roster.
  */
 import { dirname, extname } from 'node:path'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -44,6 +44,9 @@ export const Config = z.object({
 /** Language hints advertised to the GUI picker (SenseVoice set). */
 const ASR_LANGUAGES = ['auto', 'zh', 'en', 'yue', 'ja', 'ko']
 
+/** Upper bound on a single transcription input, to keep the Host out of OOM. */
+const MAX_TRANSCRIBE_BYTES = 512 * 1024 * 1024
+
 /** Remove inline model tags such as SenseVoice's <|zh|><|HAPPY|><|withitn|>. */
 function stripModelTags(text) {
   return text.replace(/<\|[^|]*\|>/g, '').trim()
@@ -57,14 +60,23 @@ function round3(value) {
 /** Parse a PCM WAV buffer's duration in seconds; undefined when not WAV. */
 function wavSeconds(buf) {
   if (buf.length < 44 || buf.toString('ascii', 0, 4) !== 'RIFF') return undefined
-  const byteRate = buf.readUInt32LE(28)
-  if (byteRate <= 0) return undefined
+  // Walk the RIFF chunks: the byte rate lives in the `fmt ` chunk, not at a
+  // fixed offset, so files with a leading JUNK/fact chunk still parse.
+  let byteRate = 0
   let off = 12
   while (off + 8 <= buf.length) {
     const id = buf.toString('ascii', off, off + 4)
     const size = buf.readUInt32LE(off + 4)
-    if (id === 'data') return size / byteRate
-    off += 8 + size + (size & 1)
+    const body = off + 8
+    if (id === 'fmt ' && size >= 16 && body + 12 <= buf.length) {
+      byteRate = buf.readUInt32LE(body + 8)
+    } else if (id === 'data') {
+      if (byteRate <= 0) return undefined
+      // A declared data size may exceed the bytes actually present; clamp.
+      const available = Math.max(0, buf.length - body)
+      return Math.min(size, available) / byteRate
+    }
+    off = body + size + (size & 1)
   }
   return undefined
 }
@@ -72,25 +84,35 @@ function wavSeconds(buf) {
 /**
  * Read the server's transcription SSE stream into one final transcript.
  * Emits `transcript.text.delta` events and ends with `transcript.text.done`
- * (or `[DONE]`); returns undefined when the stream carried no usable result,
- * so the caller can fall back to a JSON body.
+ * (or `[DONE]`); returns undefined when the stream carried no usable result.
+ * The body is consumed here, so the caller must not re-read it as JSON.
  */
 async function readTranscriptionStream(body, signal) {
   if (body === null) return undefined
+  const reader = body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
   let finalText
   let firstDeltaAt
   let ttftMs
   const started = Date.now()
+  let done = false
 
-  const handle = chunk => {
+  const handleLine = line => {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('data:')) return
+    const payload = trimmed.slice(5).trim()
+    if (payload === '[DONE]') { done = true; return }
+    if (payload === '') return
+    let chunk
+    try { chunk = JSON.parse(payload) } catch { return }
     const type = chunk?.type
     if (typeof type !== 'string') return
     if (type === 'transcript.text.delta' && firstDeltaAt === undefined) firstDeltaAt = Date.now()
     if (type === 'transcript.text.done') {
       finalText = String(chunk.text ?? '')
       ttftMs = chunk.timing?.ttft_ms
+      done = true
     }
     // A streamed failure ends without a done event; surface it instead of
     // silently returning partial text.
@@ -99,25 +121,25 @@ async function readTranscriptionStream(body, signal) {
     }
   }
 
-  for await (const part of body) {
-    signal?.throwIfAborted()
-    buffer += decoder.decode(part, { stream: true })
-    let boundary = buffer.indexOf('\n')
-    while (boundary !== -1) {
-      const line = buffer.slice(0, boundary).trim()
-      buffer = buffer.slice(boundary + 1)
-      if (line.startsWith('data:')) {
-        const payload = line.slice(5).trim()
-        if (payload === '[DONE]') break
-        if (payload !== '') {
-          try { handle(JSON.parse(payload)) } catch (error) {
-            if (error instanceof SyntaxError) continue
-            throw error
-          }
-        }
+  try {
+    while (!done) {
+      signal?.throwIfAborted()
+      const { value, done: streamDone } = await reader.read()
+      if (streamDone) break
+      buffer += decoder.decode(value, { stream: true })
+      let boundary = buffer.indexOf('\n')
+      while (boundary !== -1) {
+        handleLine(buffer.slice(0, boundary))
+        buffer = buffer.slice(boundary + 1)
+        if (done) break
+        boundary = buffer.indexOf('\n')
       }
-      boundary = buffer.indexOf('\n')
     }
+    // Flush a trailing line that arrived without a final newline.
+    if (!done && buffer.trim() !== '') handleLine(buffer)
+  } finally {
+    // Release the connection whether we finished early, errored, or aborted.
+    try { await reader.cancel() } catch { /* already closed */ }
   }
 
   if (finalText === undefined) return undefined
@@ -130,7 +152,6 @@ async function readTranscriptionStream(body, signal) {
   }
 }
 
-/** One place that turns transport failures into actionable messages. */
 /** Collect candidate error codes from fetch's single and aggregate causes. */
 function failureCodes(error) {
   const codes = new Set()
@@ -171,8 +192,8 @@ function createClient(config) {
   const base = config.serverUrl.replace(/\/+$/, '')
   let modelsCache
   let modelsCachedAt = 0
-  let voicesCache
-  let voicesCachedAt = 0
+  // Voice libraries differ per model, so cache each model's list separately.
+  const voicesCache = new Map()
 
   async function request(path, init, signal) {
     const timeout = AbortSignal.timeout(config.requestTimeoutMs)
@@ -202,14 +223,16 @@ function createClient(config) {
     return modelsCache
   }
 
-  /** The server's voice library for one TTS model, cached briefly. */
+  /** The server's voice library for one TTS model, cached briefly per model. */
   async function listVoices(model, signal) {
-    if (voicesCache && Date.now() - voicesCachedAt < 60000) return voicesCache
+    const cached = voicesCache.get(model)
+    if (cached && Date.now() - cached.at < 60000) return cached.voices
     const res = await request(`/v1/audio/voices?model=${encodeURIComponent(model)}`, {}, signal)
     const json = await res.json()
-    voicesCache = Array.isArray(json.voices) ? json.voices : []
-    voicesCachedAt = Date.now()
-    return voicesCache
+    const voices = Array.isArray(json.voices) ? json.voices : []
+    if (voicesCache.size >= 16) voicesCache.delete(voicesCache.keys().next().value)
+    voicesCache.set(model, { voices, at: Date.now() })
+    return voices
   }
 
   /** Configured model id, or the first server model registered for the task. */
@@ -241,17 +264,20 @@ function createClient(config) {
     if (wantStream) form.append('stream', 'true')
 
     const res = await request('/v1/audio/transcriptions', { method: 'POST', body: form }, signal)
-    if (wantStream && (res.headers.get('content-type') ?? '').includes('text/event-stream')) {
+    const isSse = (res.headers.get('content-type') ?? '').includes('text/event-stream')
+    if (isSse) {
+      // The body is an event stream; it cannot be re-read as JSON afterwards.
       const streamed = await readTranscriptionStream(res.body, signal)
-      if (streamed !== undefined) {
-        const text = config.stripTags ? stripModelTags(streamed.text) : streamed.text
-        return {
-          text,
-          audioSeconds: streamed.audioSeconds || wavSeconds(wavBytes) || 0,
-          inferenceSeconds: streamed.inferenceSeconds,
-          timeToFirstTextSeconds: streamed.timeToFirstTextSeconds,
-          mode: 'stream'
-        }
+      if (streamed === undefined) {
+        throw new Error('audio.cpp streaming transcription ended without a final transcript.')
+      }
+      const text = config.stripTags ? stripModelTags(streamed.text) : streamed.text
+      return {
+        text,
+        audioSeconds: streamed.audioSeconds || wavSeconds(wavBytes) || 0,
+        inferenceSeconds: streamed.inferenceSeconds,
+        timeToFirstTextSeconds: streamed.timeToFirstTextSeconds,
+        mode: 'stream'
       }
     }
 
@@ -319,30 +345,40 @@ function createClient(config) {
 async function convertToWav(config, inputPath, signal) {
   const dir = await mkdtemp(`${tmpdir()}/audio-cpp-plugin-`)
   const out = `${dir}/input-16k.wav`
-  await new Promise((resolve, reject) => {
-    const proc = spawn(config.ffmpegPath, [
-      '-nostdin', '-y', '-i', inputPath,
-      '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', out
-    ], { stdio: ['ignore', 'ignore', 'pipe'] })
-    let err = ''
-    proc.stderr.on('data', chunk => {
-      err += chunk.toString()
-      if (err.length > 4000) err = err.slice(-4000)
+  const cleanup = () => rm(dir, { recursive: true, force: true })
+  try {
+    await new Promise((resolve, reject) => {
+      const proc = spawn(config.ffmpegPath, [
+        '-nostdin', '-y', '-i', inputPath,
+        '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', out
+      ], { stdio: ['ignore', 'ignore', 'pipe'] })
+      let err = ''
+      let settled = false
+      proc.stderr.on('data', chunk => {
+        err += chunk.toString()
+        if (err.length > 4000) err = err.slice(-4000)
+      })
+      const onAbort = () => proc.kill('SIGKILL')
+      signal?.addEventListener('abort', onAbort, { once: true })
+      const settle = (fn, arg) => {
+        if (settled) return
+        settled = true
+        signal?.removeEventListener('abort', onAbort)
+        fn(arg)
+      }
+      proc.on('error', error => settle(reject, new Error(`ffmpeg is unavailable (${error.message}). Install ffmpeg or pass a WAV file.`)))
+      proc.on('close', code => {
+        if (signal?.aborted) settle(reject, new Error('Cancelled.'))
+        else if (code === 0) settle(resolve, undefined)
+        else settle(reject, new Error(`ffmpeg conversion failed (exit ${code}): ${err.slice(-400)}`))
+      })
     })
-    const onAbort = () => proc.kill('SIGKILL')
-    signal?.addEventListener('abort', onAbort, { once: true })
-    const settle = (fn, arg) => {
-      signal?.removeEventListener('abort', onAbort)
-      fn(arg)
-    }
-    proc.on('error', error => settle(reject, new Error(`ffmpeg is unavailable (${error.message}). Install ffmpeg or pass a WAV file.`)))
-    proc.on('close', code => {
-      if (signal?.aborted) settle(reject, new Error('Cancelled.'))
-      else if (code === 0) settle(resolve, undefined)
-      else settle(reject, new Error(`ffmpeg conversion failed (exit ${code}): ${err.slice(-400)}`))
-    })
-  })
-  return { path: out, cleanup: () => rm(dir, { recursive: true, force: true }) }
+  } catch (error) {
+    // Do not leave a partial conversion behind when ffmpeg fails or is killed.
+    await cleanup().catch(() => {})
+    throw error
+  }
+  return { path: out, cleanup }
 }
 
 /** Resolve a model-supplied path against the session working directory. */
@@ -529,8 +565,11 @@ function registerConfigRoutes(ctx, config) {
 
           // Everything below is read live from the server on every request:
           // nothing about models, capabilities, voices, or readiness is cached.
-          const healthProbe = await probe('/health')
-          const modelsProbe = await probe('/v1/models?include_params=true')
+          // Health and the model roster are independent, so probe them together.
+          const [healthProbe, modelsProbe] = await Promise.all([
+            probe('/health'),
+            probe('/v1/models?include_params=true')
+          ])
           const list = modelsProbe.ok && Array.isArray(modelsProbe.body?.data) ? modelsProbe.body.data : []
 
           // Voice discovery must follow the model the page is showing right now, so an
@@ -696,6 +735,10 @@ export function apply(ctx, config) {
           throw new Error(`Audio file not found: ${args.path}`)
         }
         const hostPath = ctx.fs.processPath(target)
+        const fileSize = (await stat(hostPath)).size
+        if (fileSize > MAX_TRANSCRIBE_BYTES) {
+          throw new Error(`Audio file is too large (${(fileSize / 1048576).toFixed(0)} MB); the limit is ${MAX_TRANSCRIBE_BYTES / 1048576} MB. Split it into shorter segments first.`)
+        }
         let wavBytes
         let cleanup = async () => {}
         if (extname(hostPath).toLowerCase() === '.wav') {
@@ -785,11 +828,13 @@ export function apply(ctx, config) {
     }))
 
     // Non-blocking activation probe: surfaces a wrong URL early in the log
-    // and reports which models discovery will use.
+    // and reports which models discovery will use. Bounded so a down server
+    // does not hold the probe for the full request timeout.
     void (async () => {
+      const probeSignal = AbortSignal.timeout(8000)
       try {
-        const health = await client.health()
-        const models = await client.listModels()
+        const health = await client.health(probeSignal)
+        const models = await client.listModels(probeSignal)
         const asr = config.asrModel || models.find(m => m.task === 'asr')?.id || '(none)'
         const tts = config.ttsModel || models.find(m => m.task === 'tts')?.id || '(none)'
         log.info(`connected to audio.cpp ${health.version ?? ''} (${health.backend ?? 'unknown backend'}), ASR model ${asr}, TTS model ${tts}`)

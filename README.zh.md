@@ -9,7 +9,7 @@ audio.cpp 是纯 C++ 的 ggml 音频模型推理引擎（ASR、TTS、VAD、声�
 ## 功能
 
 - **GUI 语音输入** — 向 Harness 语音输入子系统注册 `speechToText` provider（`audio-cpp`），输入框的麦克风按钮直接走你的 audio.cpp ASR 模型转写。音频全程留在你自己的基础设施上。
-- **`speech_transcribe` 工具** — 把本地音频文件转成文字。WAV 直传；mp3/flac/m4a/ogg 等格式经 ffmpeg 转换。返回文本及音频/推理时长。
+- **`speech_transcribe` 工具** — 把本地音频文件转成文字。WAV 直传；mp3/flac/m4a/ogg 等格式经 ffmpeg 转换。返回文本及音频/推理时长。单次输入上限 512 MB 以保护宿主，更长的录音请先切分。
 - **`speech_synthesize` 工具** — 把文字合成为本地 WAV 文件，可选音色与语气指令。未指定音色时用服务端默认；对需要参考音频的零样本模型（如 CosyVoice3），自动取音色库第一个音色。Agent 可用 `present` 把音频交付给你。
 - **模型自动发现** — 模型 id 可配置，也可留空时由插件从服务端 `/v1/models` 按任务（`asr` / `tts`）自动选取。
 - **实时 / 非实时识别** — 可让服务端边解码边返回转写事件（`stream`），或整段解码后一次返回（`offline`）；`speech_transcribe` 结果会标明实际走的路径，流式时还给出首个文本耗时。

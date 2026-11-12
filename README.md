@@ -9,7 +9,7 @@ audio.cpp is a pure-C++ ggml inference engine for audio models (ASR, TTS, VAD, v
 ## Features
 
 - **GUI voice input** — registers a `speechToText` provider (`audio-cpp`) with the Harness voice-input subsystem, so the composer's microphone button transcribes through your audio.cpp ASR model. Audio stays on your infrastructure.
-- **`speech_transcribe` agent tool** — transcribe a local audio file to text. WAV is sent directly; mp3/flac/m4a/ogg and other formats are converted with ffmpeg. Returns text plus audio/inference durations.
+- **`speech_transcribe` agent tool** — transcribe a local audio file to text. WAV is sent directly; mp3/flac/m4a/ogg and other formats are converted with ffmpeg. Returns text plus audio/inference durations. Inputs are capped at 512 MB to protect the Host; split longer recordings first.
 - **`speech_synthesize` agent tool** — synthesize text to a local WAV file, with optional voice selection and speaking-style instruction. When no voice is given, the server default applies; for zero-shot models that require reference audio (e.g. CosyVoice3), the first voice-library entry is used. The agent can deliver the file to you with `present`.
 - **Model auto-discovery** — model ids come from configuration, or are discovered from the server's `/v1/models` roster by task (`asr` / `tts`).
 - **Streaming or offline recognition** — ask the server for incremental transcript events (`stream`) or a single answer after decoding (`offline`); the `speech_transcribe` result reports which path ran and, for streaming, time to first text.

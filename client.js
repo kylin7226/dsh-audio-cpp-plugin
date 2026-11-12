@@ -15,7 +15,7 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react')
     const h = React.createElement
-    const { useCallback, useEffect, useMemo, useState } = React
+    const { useCallback, useEffect, useMemo, useRef, useState } = React
 
     const NS = 'audio-cpp-plugin'
 
@@ -348,7 +348,11 @@ window.__ModuleLoader__.load({
         }
       }, [apply, t])
 
-      useEffect(() => { void reload() }, [reload])
+      // Load once on mount. A ref keeps the latest reload (and its locale) without
+      // re-triggering the fetch whenever the translate function's identity changes.
+      const reloadRef = useRef(reload)
+      reloadRef.current = reload
+      useEffect(() => { void reloadRef.current() }, [])
 
       const patch = useCallback((key, value) => {
         setConfig(current => current === null ? current : { ...current, [key]: value })
