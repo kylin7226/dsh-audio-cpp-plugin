@@ -31,7 +31,15 @@ window.__ModuleLoader__.load({
       auto: '自动（第一个同类模型）',
       noModels: '服务端未返回模型，请检查地址',
       defaultVoice: '默认音色',
-      serverDefaultVoice: '服务端默认',
+      serverDefaultVoice: '留空则由服务端决定',
+      voiceHint: '填参考音色库名称，或模型自带的内置音色 ID（是否支持取决于所选模型）',
+      referenceVoices: '参考音色库',
+      noReferenceVoices: '本模型未提供参考音色；克隆类模型（如 CosyVoice3）必须要有参考音色才能合成',
+      builtInNote: '内置音色（如 Kokoro 的 af_heart）打包在模型权重里，服务端不列出，需按该模型文档填写其 ID',
+      voiceKindLibrary: '参考音色',
+      voiceKindCustom: '自定义 / 内置 ID',
+      voiceEffective: '当前将发送 voice = {voice}',
+      voiceServerDefault: '当前不发送音色，由服务端选择；若模型要求参考音频且未配置默认音色，将自动使用参考音色库第一个',
       language: '识别语言',
       refresh: '刷新',
       refreshing: '刷新中…',
@@ -68,7 +76,15 @@ window.__ModuleLoader__.load({
       auto: 'Automatic (first of this task)',
       noModels: 'The server returned no models; check the URL',
       defaultVoice: 'Default voice',
-      serverDefaultVoice: 'Server default',
+      serverDefaultVoice: 'Empty: the server decides',
+      voiceHint: 'A reference-library name, or a built-in voice id the selected model packages',
+      referenceVoices: 'Reference library',
+      noReferenceVoices: 'This model exposes no reference voices; cloning models such as CosyVoice3 cannot synthesize without one',
+      builtInNote: 'Built-in voices (e.g. af_heart for Kokoro) are packaged in the model weights and are not listed by the server; enter the id its documentation specifies',
+      voiceKindLibrary: 'reference voice',
+      voiceKindCustom: 'custom / built-in id',
+      voiceEffective: 'Requests will send voice = {voice}',
+      voiceServerDefault: 'No voice is sent; the server decides, falling back to the first reference voice when the model requires reference audio',
       language: 'Recognition language',
       refresh: 'Refresh',
       refreshing: 'Refreshing…',
@@ -158,6 +174,8 @@ window.__ModuleLoader__.load({
 .aac-hint { font-size: 12px; color: var(--dsw-alias-label-secondary); }
 .aac-error { font-size: 12px; color: var(--dsw-alias-state-error-primary); }
 .aac-row { display: flex; align-items: center; gap: 8px; }
+.aac-chip { flex: none; padding: 2px 7px; border-radius: 999px; font-size: 11px; white-space: nowrap;
+  color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l1); }
 .aac-check { width: 14px; height: 14px; accent-color: var(--dsw-alias-brand-primary); }
 .aac-section { border-top: 1px solid var(--dsw-alias-border-l1); padding-top: 12px; display: flex; flex-direction: column; gap: 10px; }
 .aac-section-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 600; }
@@ -345,19 +363,37 @@ window.__ModuleLoader__.load({
             )
           ),
 
-          h(Row, { label: t('defaultVoice') },
-            h('input', {
-              className: 'aac-control',
-              type: 'text',
-              list: 'aac-voices',
-              value: config.defaultVoice,
-              placeholder: t('serverDefaultVoice'),
-              disabled: busy,
-              onChange: event => patch('defaultVoice', event.target.value)
-            }),
+          h(Row, { label: t('defaultVoice'), hint: t('voiceHint') },
+            h('div', { className: 'aac-row' },
+              h('input', {
+                className: 'aac-control',
+                type: 'text',
+                list: 'aac-voices',
+                value: config.defaultVoice,
+                placeholder: voices.length > 0 ? voices[0] : t('serverDefaultVoice'),
+                disabled: busy,
+                onChange: event => patch('defaultVoice', event.target.value)
+              }),
+              config.defaultVoice && voices.includes(config.defaultVoice)
+                ? h('span', { className: 'aac-chip' }, t('voiceKindLibrary'))
+                : null,
+              config.defaultVoice && !voices.includes(config.defaultVoice)
+                ? h('span', { className: 'aac-chip' }, t('voiceKindCustom'))
+                : null
+            ),
+            // Reference-library names are enumerable; built-in voices are
+            // packaged in the model weights and are not advertised by the server.
             voices.length > 0
               ? h('datalist', { id: 'aac-voices' }, voices.map(voice => h('option', { key: voice, value: voice })))
-              : null
+              : null,
+            h('div', { className: 'aac-hint' },
+              voices.length > 0
+                ? `${t('referenceVoices')} (${voices.length}): ${voices.join(', ')}`
+                : t('noReferenceVoices')),
+            h('div', { className: 'aac-hint' }, t('builtInNote')),
+            config.defaultVoice
+              ? h('div', { className: 'aac-hint' }, t('voiceEffective').replace('{voice}', config.defaultVoice))
+              : h('div', { className: 'aac-hint' }, t('voiceServerDefault'))
           ),
 
           h(Row, { label: t('language') },

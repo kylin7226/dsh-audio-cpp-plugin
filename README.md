@@ -104,7 +104,7 @@ The same fields are editable by hand in the profile's `cordis.patch.yml` (the us
 | `serverUrl` | `http://127.0.0.1:8080` | Base URL of the audio.cpp server |
 | `asrModel` | `''` (auto) | Server model id for transcription; empty picks the first `asr` model |
 | `ttsModel` | `''` (auto) | Server model id for synthesis; empty picks the first `tts` model |
-| `defaultVoice` | `''` (server default) | Voice sent when a request omits one |
+| `defaultVoice` | `''` (server default) | Voice sent when a request omits one — a **reference-library** name or a **built-in** voice id (see below) |
 | `language` | `auto` | Default ASR language hint; `auto` omits the hint |
 | `asrOptions` | `{}` | Request options for `/v1/audio/transcriptions`, sent as the `options` form field |
 | `ttsOptions` | `{}` | Request options for `/v1/audio/speech`, sent as `options` |
@@ -113,6 +113,15 @@ The same fields are editable by hand in the profile's `cordis.patch.yml` (the us
 | `ffmpegPath` | `ffmpeg` | ffmpeg executable for non-WAV conversion |
 
 Model option names and accepted values are defined by your server's model family — see [model docs](https://github.com/0xShug0/audio.cpp/blob/main/docs/usage.md) and `GET /v1/models?include_params=true` on your server for what each one accepts.
+
+### Two kinds of voice
+
+audio.cpp TTS models differ in how a voice is selected, and the settings page distinguishes them:
+
+- **Reference-library voices** — files in the server's `voice_dir` (or its model presets). Your server lists these through `GET /v1/audio/voices`, and the settings page shows them with a `reference voice` chip and offers them as autocomplete. Cloning families such as CosyVoice3 *require* one; when neither a voice nor a reference is configured, the plugin falls back to the first library voice.
+- **Built-in voices** — speaker packs packaged inside the model weights (for example Kokoro's `af_heart` / `zf_xiaoxiao`, or Qwen3-TTS CustomVoice's `Vivian`). The server does **not** enumerate them; enter the id the model's documentation specifies. The page marks anything outside the reference library as `custom / built-in id`.
+
+If a synthesis fails with `requires reference audio`, the selected model has no built-in voice and needs a reference-library entry instead.
 
 ## Usage
 

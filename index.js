@@ -166,11 +166,15 @@ function createClient(config) {
       response_format: 'wav'
     }
     let selectedVoice = voice ?? config.defaultVoice
+    let voiceSource = selectedVoice ? 'configured' : undefined
     if (!selectedVoice && !voiceRef) {
       // Zero-shot models (e.g. CosyVoice3) require reference audio; when the
       // server has no default preset, fall back to its first library voice.
       const voices = await listVoices(modelId, signal)
-      if (voices.length > 0) selectedVoice = voices[0]
+      if (voices.length > 0) {
+        selectedVoice = voices[0]
+        voiceSource = 'library'
+      }
     }
     if (selectedVoice) body.voice = selectedVoice
     if (instruct) body.instruct = instruct
@@ -190,7 +194,7 @@ function createClient(config) {
     if (buf.length < 44 || buf.toString('ascii', 0, 4) !== 'RIFF') {
       throw new Error(`audio.cpp returned non-WAV data: ${buf.subarray(0, 200).toString('utf8')}`)
     }
-    return { buf, voice: selectedVoice }
+    return { buf, voice: selectedVoice, voiceSource }
   }
 
   async function health(signal) {
@@ -413,7 +417,13 @@ function registerConfigRoutes(ctx, config) {
             server: {
               health: health ?? null,
               models: list,
-              voices: Array.isArray(voices?.voices) ? voices.voices : []
+              // Only the shared reference library is enumerable; built-in
+              // voices are packaged inside model weights and never listed.
+              voices: Array.isArray(voices?.voices) ? voices.voices : [],
+              voiceKinds: {
+                library: Array.isArray(voices?.voices) ? voices.voices : [],
+                builtIn: 'not-enumerable'
+              }
             }
           })
         }
@@ -554,7 +564,7 @@ export function apply(ctx, config) {
 
     const disposeSynthesize = ctx.tools.register(defineTool({
       name: 'speech_synthesize',
-      description: 'Synthesize speech from text to a local WAV file with an audio.cpp TTS server. Voice names come from the server voice library; omit voice to use the server default, or the first library voice when the model requires a reference. Returns the written file path; deliver the audio to the user with present.',
+      description: 'Synthesize speech from text to a local WAV file with an audio.cpp TTS server. Voice accepts either a reference-library name or a built-in voice id packaged with the model; omit it to use the configured default, the server default, or the first reference voice when the model requires a reference. Returns the written file path; deliver the audio to the user with present.',
       parameters: {
         text: {
           type: 'string',
@@ -567,7 +577,7 @@ export function apply(ctx, config) {
         },
         voice: {
           type: 'string',
-          description: 'Voice name from the audio.cpp server voice library or a model-native voice id. Omit for the server default (or the first library voice when the model requires a reference).'
+          description: 'Either a reference-library name (for cloning models) or a built-in voice id packaged in the model weights (e.g. af_heart for Kokoro, Vivian for Qwen3-TTS CustomVoice). Built-in voices are not listed by the server, so pass the id the model documents. Omit for the configured default, the server default, or the first reference voice when the model requires a reference.'
         },
         instruct: {
           type: 'string',

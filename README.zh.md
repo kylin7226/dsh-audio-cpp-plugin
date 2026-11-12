@@ -104,7 +104,7 @@ Bundle 会插入四行：插件本体、DSH 语音转写服务（默认 provider
 | `serverUrl` | `http://127.0.0.1:8080` | audio.cpp 服务地址 |
 | `asrModel` | `''`（自动） | 转写用的服务端模型 id；留空取第一个 `asr` 模型 |
 | `ttsModel` | `''`（自动） | 合成用的服务端模型 id；留空取第一个 `tts` 模型 |
-| `defaultVoice` | `''`（服务端默认） | 请求未指定音色时发送的音色 |
+| `defaultVoice` | `''`（服务端默认） | 请求未指定音色时发送的音色——**参考音色库**名称或**内置音色** ID（见下） |
 | `language` | `auto` | 默认 ASR 语言提示；`auto` 表示不发送提示 |
 | `asrOptions` | `{}` | `/v1/audio/transcriptions` 的请求参数，以 `options` 表单字段发送 |
 | `ttsOptions` | `{}` | `/v1/audio/speech` 的请求参数，以 `options` 发送 |
@@ -113,6 +113,15 @@ Bundle 会插入四行：插件本体、DSH 语音转写服务（默认 provider
 | `ffmpegPath` | `ffmpeg` | 非 WAV 转换用的 ffmpeg 可执行文件 |
 
 模型选项的名称与取值范围由你服务端的模型家族决定——参见 [模型文档](https://github.com/0xShug0/audio.cpp/blob/main/docs/usage.md) 以及服务端的 `GET /v1/models?include_params=true`。
+
+### 两类音色
+
+audio.cpp 的 TTS 模型选音色方式不同，设置页对两者做了区分：
+
+- **参考音色库** — 服务端 `voice_dir` 里的 WAV（或模型预设）。服务端通过 `GET /v1/audio/voices` 列出，设置页会标注「参考音色」并作为补全候选。CosyVoice3 这类克隆模型**必须**有参考音色；既没配音色也没给参考音频时，插件自动回退到音色库第一个。
+- **内置音色** — 打包在模型权重里的说话人（如 Kokoro 的 `af_heart` / `zf_xiaoxiao`、Qwen3-TTS CustomVoice 的 `Vivian`）。服务端**不会**枚举它们，需按该模型文档填写 ID；设置页会把不在音色库里的值标为「自定义 / 内置 ID」。
+
+若合成报 `requires reference audio`，说明所选模型没有内置音色，需要改用参考音色库中的音色。
 
 ## 使用
 
