@@ -22,6 +22,14 @@ window.__ModuleLoader__.load({
     const zh = {
       serverUrl: '服务器地址',
       serverUrlHint: 'audio.cpp 服务的 HTTP 地址',
+      state_ok: '已连接',
+      state_degraded: '部分可用（模型列表读取失败）',
+      state_unreachable: '无法连接',
+      capAsr: 'ASR 模型',
+      capTts: 'TTS 模型',
+      capStreaming: '支持实时',
+      capLoaded: '已加载',
+      missingModels: '以下配置的模型已不在服务端列表中：',
       status: '连接状态',
       online: '已连接',
       offline: '无法连接',
@@ -72,6 +80,14 @@ window.__ModuleLoader__.load({
     const en = {
       serverUrl: 'Server URL',
       serverUrlHint: 'HTTP address of the audio.cpp server',
+      state_ok: 'Connected',
+      state_degraded: 'Partly available (model list failed)',
+      state_unreachable: 'Unreachable',
+      capAsr: 'ASR models',
+      capTts: 'TTS models',
+      capStreaming: 'streaming',
+      capLoaded: 'loaded',
+      missingModels: 'Configured models no longer present on the server:',
       status: 'Status',
       online: 'Connected',
       offline: 'Unreachable',
@@ -171,6 +187,7 @@ window.__ModuleLoader__.load({
 .aac-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
 .aac-dot.on { background: var(--dsw-alias-state-success-primary); }
 .aac-dot.off { background: var(--dsw-alias-state-error-primary); }
+.aac-dot.warn { background: var(--dsw-alias-state-warn-primary); }
 .aac-muted { color: var(--dsw-alias-label-secondary); }
 .aac-grid { display: grid; grid-template-columns: minmax(120px, 180px) minmax(0, 1fr); gap: 10px 14px; align-items: center; }
 .aac-label { color: var(--dsw-alias-label-secondary); }
@@ -235,7 +252,8 @@ window.__ModuleLoader__.load({
 
     function Settings({ t }) {
       const [config, setConfig] = useState(null)
-      const [server, setServer] = useState({ health: null, models: [], voices: [] })
+      const [server, setServer] = useState({ health: null, models: [], voices: [], capabilities: null })
+      const [status, setStatus] = useState(null)
       const [texts, setTexts] = useState({ asrOptions: '', ttsOptions: '' })
       const [loading, setLoading] = useState(true)
       const [busy, setBusy] = useState(false)
@@ -251,13 +269,24 @@ window.__ModuleLoader__.load({
         })
       }, [])
 
-      const reload = useCallback(async () => {
+      const reload = useCallback(async (modelOverride) => {
         setLoading(true)
         try {
-          const res = await fetch(api('/audio-cpp-plugin/config'), { cache: 'no-store' })
+          const query = modelOverride ? `?model=${encodeURIComponent(modelOverride)}` : ''
+          const res = await fetch(api(`/audio-cpp-plugin/config${query}`), { cache: 'no-store' })
           if (!res.ok) throw new Error(`HTTP ${res.status}`)
-          apply(await res.json())
-          setMessage(null)
+          const body = await res.json()
+          if (modelOverride) {
+            // Only refresh the server side (voices for the newly picked model);
+            // keep unsaved edits in the form.
+            setServer(body.server ?? { health: null, models: [], voices: [] })
+            setStatus(body.status ?? null)
+            setMessage(null)
+          } else {
+            apply(body)
+            setStatus(body.status ?? null)
+            setMessage(null)
+          }
         } catch (error) {
           setMessage({ kind: 'err', text: `${t('offline')}: ${error.message}` })
         } finally {
@@ -280,7 +309,9 @@ window.__ModuleLoader__.load({
       const asrModels = models.filter(model => model.task === 'asr')
       const ttsModels = models.filter(model => model.task === 'tts')
       const voices = Array.isArray(server.voices) ? server.voices : []
-      const online = server.health !== null && server.health !== undefined
+      const capabilities = server.capabilities ?? null
+      const state = status?.state ?? (server.health ? 'ok' : 'unreachable')
+      const online = state === 'ok'
 
       const save = useCallback(async () => {
         if (config === null || hasErrors) return
@@ -322,13 +353,37 @@ window.__ModuleLoader__.load({
         h('style', null, css),
 
         h('div', { className: 'aac-head' },
-          h('span', { className: `aac-dot ${online ? 'on' : 'off'}` }),
+          h('span', { className: `aac-dot ${online ? 'on' : state === 'degraded' ? 'warn' : 'off'}` }),
           h('span', { className: 'aac-title' }, t('status')),
-          h('span', { className: 'aac-muted' }, online ? t('online') : t('offline')),
+          h('span', { className: 'aac-muted' }, t(`state_${state}`)),
           online && server.health?.backend
             ? h('span', { className: 'aac-muted' }, `· ${t('backend')} ${server.health.backend}${server.health.version ? ` · ${server.health.version}` : ''}`)
-            : null
+            : null,
+          h('button', {
+            className: 'aac-btn',
+            disabled: loading || busy,
+            onClick: () => void reload()
+          }, loading ? t('refreshing') : t('refresh'))
         ),
+
+        // Everything reported here comes from the server's own API.
+        state !== 'ok'
+          ? h('div', { className: 'aac-error' }, `${t(`state_${state}`)}${status?.detail ? `: ${status.detail}` : ''}`)
+          : null,
+
+        capabilities
+          ? h('div', { className: 'aac-hint' },
+            [
+              `${t('capAsr')} ${capabilities.asr}`,
+              `${t('capTts')} ${capabilities.tts}`,
+              `${t('capStreaming')} ${capabilities.streamingAsr}`,
+              `${t('capLoaded')} ${capabilities.loaded}`
+            ].join(' · '))
+          : null,
+
+        capabilities && capabilities.missing?.length > 0
+          ? h('div', { className: 'aac-error' }, `${t('missingModels')} ${capabilities.missing.join(', ')}`)
+          : null,
 
         // Model-agnostic fields only: these mean the same thing for every family.
         h('div', { className: 'aac-grid' },
@@ -340,12 +395,7 @@ window.__ModuleLoader__.load({
                 value: config.serverUrl,
                 disabled: busy,
                 onChange: event => patch('serverUrl', event.target.value)
-              }),
-              h('button', {
-                className: 'aac-btn',
-                disabled: loading || busy,
-                onClick: () => void reload()
-              }, loading ? t('refreshing') : t('refresh'))
+              })
             )
           ),
 
@@ -366,7 +416,10 @@ window.__ModuleLoader__.load({
               className: 'aac-control',
               value: config.ttsModel,
               disabled: busy,
-              onChange: event => patch('ttsModel', event.target.value)
+              onChange: event => {
+                patch('ttsModel', event.target.value)
+                void reload(event.target.value)
+              }
             },
               h('option', { value: '' }, `${t('auto')}${ttsModels.length ? ` — ${ttsModels[0].id}` : ''}`),
               ttsModels.map(model => h('option', { key: model.id, value: model.id }, model.id))

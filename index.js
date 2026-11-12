@@ -131,13 +131,39 @@ async function readTranscriptionStream(body, signal) {
 }
 
 /** One place that turns transport failures into actionable messages. */
+/** Collect candidate error codes from fetch's single and aggregate causes. */
+function failureCodes(error) {
+  const codes = new Set()
+  const visit = cause => {
+    if (cause === null || typeof cause !== 'object' || codes.size > 16) return
+    if (typeof cause.code === 'string') codes.add(cause.code)
+    if (typeof cause.errno === 'string') codes.add(cause.errno)
+    if (Array.isArray(cause.errors)) for (const nested of cause.errors) visit(nested)
+    if (cause.cause !== undefined && cause.cause !== cause) visit(cause.cause)
+  }
+  visit(error)
+  visit(error?.cause)
+  return codes
+}
+
 function describeFailure(error, serverUrl) {
-  const code = error?.cause?.code ?? error?.code
-  if (code === 'ECONNREFUSED') return `Cannot reach the audio.cpp server at ${serverUrl} (connection refused). Check that audiocpp_server is running.`
-  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return `Cannot resolve the audio.cpp server host in ${serverUrl}.`
-  if (error?.name === 'TimeoutError' || code === 'UND_ERR_CONNECT_TIMEOUT') return `The audio.cpp server at ${serverUrl} timed out.`
+  const codes = failureCodes(error)
+  const has = (...names) => names.some(name => codes.has(name))
   if (error?.name === 'AbortError') return 'Cancelled.'
-  return `audio.cpp request failed: ${error?.message ?? String(error)}`
+  if (error?.name === 'TimeoutError' || has('UND_ERR_CONNECT_TIMEOUT', 'ETIMEDOUT')) {
+    return `The audio.cpp server at ${serverUrl} timed out.`
+  }
+  if (has('ECONNREFUSED')) {
+    return `Cannot reach the audio.cpp server at ${serverUrl} (connection refused). Check that audiocpp_server is running and the port is right.`
+  }
+  if (has('ENOTFOUND', 'EAI_AGAIN')) return `Cannot resolve the audio.cpp server host in ${serverUrl}.`
+  if (has('CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'DEPTH_ZERO_SELF_SIGNED_CERT')) {
+    return `TLS certificate verification failed for ${serverUrl}.`
+  }
+  if (has('ERR_INVALID_URL')) return `Malformed server URL: ${serverUrl}`
+  const cause = error?.cause?.message
+  const detail = cause && cause !== 'fetch failed' ? cause : error?.message
+  return `audio.cpp request failed for ${serverUrl}: ${detail ?? 'unknown error'}`
 }
 
 /** Build the shared HTTP client bound to one validated config. */
@@ -486,9 +512,11 @@ function registerConfigRoutes(ctx, config) {
     async function probe(path) {
       try {
         const res = await fetch(base + path, { signal: AbortSignal.timeout(8000) })
-        if (!res.ok) return null
-        return await res.json()
-      } catch { return null }
+        if (!res.ok) return { ok: false, status: res.status }
+        return { ok: true, body: await res.json() }
+      } catch (error) {
+        return { ok: false, error: describeFailure(error, config.serverUrl) }
+      }
     }
 
     child.effect(() => {
@@ -498,21 +526,57 @@ function registerConfigRoutes(ctx, config) {
         handler: async (req, res) => {
           if (!fence(req)) return sendJson(res, 403, { error: 'untrusted origin' })
           if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, 405, { error: 'method not allowed' })
-          const models = await probe('/v1/models?include_params=true')
-          const list = Array.isArray(models?.data) ? models.data : []
-          const ttsId = config.ttsModel || list.find(m => m.task === 'tts')?.id
-          const voices = ttsId ? await probe(`/v1/audio/voices?model=${encodeURIComponent(ttsId)}`) : null
-          const health = await probe('/health')
+
+          // Everything below is read live from the server on every request:
+          // nothing about models, capabilities, voices, or readiness is cached.
+          const healthProbe = await probe('/health')
+          const modelsProbe = await probe('/v1/models?include_params=true')
+          const list = modelsProbe.ok && Array.isArray(modelsProbe.body?.data) ? modelsProbe.body.data : []
+
+          // Voice discovery must follow the model the page is showing right now, so an
+      // unsaved pick in the model selector still lists that model's voices.
+      // `?model=` overrides the stored configuration for this read only.
+      const requestedTts = typeof req.url === 'string' ? new URL(req.url, 'http://localhost').searchParams.get('model') : null
+      const ttsId = requestedTts || config.ttsModel || list.find(m => m.task === 'tts')?.id
+          const voicesProbe = ttsId ? await probe(`/v1/audio/voices?model=${encodeURIComponent(ttsId)}`) : undefined
+
+          let status
+          if (!healthProbe.ok) {
+            status = { state: 'unreachable', detail: healthProbe.error ?? (healthProbe.status ? `HTTP ${healthProbe.status}` : 'no response') }
+          } else if (!modelsProbe.ok) {
+            status = { state: 'degraded', detail: modelsProbe.error ?? `HTTP ${modelsProbe.status}` }
+          } else {
+            status = { state: 'ok', detail: undefined }
+          }
+
+          const asrModels = list.filter(m => m.task === 'asr')
+          const ttsModels = list.filter(m => m.task === 'tts')
+          // Model ids configured on the server but absent from its advertise
+          // list mean the stored config no longer matches what is running.
+          const missing = []
+          if (config.asrModel && !list.some(m => m.id === config.asrModel)) missing.push(config.asrModel)
+          if (config.ttsModel && !list.some(m => m.id === config.ttsModel)) missing.push(config.ttsModel)
+
           sendJson(res, 200, {
+            status,
             config: configView(config),
             server: {
-              health: health ?? null,
+              health: healthProbe.ok ? healthProbe.body : null,
               models: list,
+              capabilities: {
+                asr: asrModels.length,
+                tts: ttsModels.length,
+                streamingAsr: asrModels.filter(m => m.mode === 'streaming').length,
+                loaded: list.filter(m => m.loaded === true).length,
+                missing
+              },
+              voiceModel: ttsId ?? null,
+              voicesAvailable: voicesProbe !== undefined && voicesProbe.ok,
               // Only the shared reference library is enumerable; built-in
               // voices are packaged inside model weights and never listed.
-              voices: Array.isArray(voices?.voices) ? voices.voices : [],
+              voices: voicesProbe?.ok && Array.isArray(voicesProbe.body?.voices) ? voicesProbe.body.voices : [],
               voiceKinds: {
-                library: Array.isArray(voices?.voices) ? voices.voices : [],
+                library: voicesProbe?.ok && Array.isArray(voicesProbe.body?.voices) ? voicesProbe.body.voices : [],
                 builtIn: 'not-enumerable'
               }
             }

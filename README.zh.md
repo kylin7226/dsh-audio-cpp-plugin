@@ -146,6 +146,19 @@ audio.cpp 提供两种转写方式，插件都支持：
 
 `speech_synthesize` 参数：`text`（必填）、`output`（WAV 路径，默认会话工作目录下 `tts-<id>.wav`）、`voice`（服务端音色库名或模型原生音色 id）、`instruct`（语气指令，仅 instruct 类模型生效）。
 
+### 实时读取服务状态
+
+设置页不缓存任何服务端事实，每次加载都重新读取其 API：
+
+| 界面显示 | 数据来源 |
+|---|---|
+| 连接状态、后端、版本 | `GET /health` |
+| ASR/TTS 模型及其 task、`mode`、`family`、`loaded` | `GET /v1/models?include_params=true` |
+| 各类模型数量、支持实时的 ASR 数、配置但已不存在的模型 id | 由模型列表推导 |
+| 所选 TTS 模型的参考音色 | `GET /v1/audio/voices?model=<id>` |
+
+状态分三档：`ok`、`degraded`（`/health` 有响应但模型列表失败）、`unreachable`（并给出具体原因：连接被拒、DNS、TLS 或超时）。若配置里的模型 id 已不在服务端广播列表中，会明确列出，避免过期配置看起来一切正常。在表单中切换 TTS 模型会立即重新查询该模型的音色，无需先保存。
+
 ## 工作原理
 
 ```

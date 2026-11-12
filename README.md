@@ -146,6 +146,19 @@ Streaming requires an ASR model configured with `"mode": "streaming"` on the ser
 
 `speech_synthesize` parameters: `text` (required), `output` (WAV path, defaults to `tts-<id>.wav` in the session working directory), `voice` (server voice-library name or model-native voice id), `instruct` (speaking-style instruction for instruct-capable models).
 
+### Live server state
+
+The settings page never caches facts about your server. Every load re-reads its API:
+
+| Shown | Source |
+|---|---|
+| Connection status, backend, version | `GET /health` |
+| ASR/TTS models, task, `mode`, `family`, `loaded` | `GET /v1/models?include_params=true` |
+| Model counts, streaming-capable ASR count, configured-but-missing ids | derived from the model list |
+| Reference voices for the selected TTS model | `GET /v1/audio/voices?model=<id>` |
+
+Status distinguishes three outcomes: `ok`, `degraded` (`/health` answers but the model list fails), and `unreachable` (with the concrete reason — connection refused, DNS, TLS, or timeout). A model id stored in configuration that the server no longer advertises is listed explicitly, so a stale config cannot silently look healthy. Picking a different TTS model in the form re-queries that model's voices immediately, without saving first.
+
 ## How it works
 
 ```
